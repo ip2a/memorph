@@ -37,9 +37,8 @@ fn session_to_summary(
     project_dir: Option<String>,
     source_path: String,
 ) -> ProviderSessionSummary {
-    archived: false,
     ProviderSessionSummary {
-        archived: false,
+        archived: session.archived(),
         session_id: session.composer_id.clone(),
         title: session.title(),
         project_dir,

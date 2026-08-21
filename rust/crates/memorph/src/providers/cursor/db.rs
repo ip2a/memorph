@@ -172,6 +172,7 @@ pub struct CursorComposerHeader {
     pub created_at: Option<i64>,
     pub last_updated_at: Option<i64>,
     pub recency: Option<i64>,
+    pub is_archived: Option<i64>,
     pub value: serde_json::Value,
 }
 
@@ -189,6 +190,13 @@ pub struct CursorSessionMetadata {
 }
 
 impl CursorSessionMetadata {
+    pub fn archived(&self) -> bool {
+        self.header
+            .as_ref()
+            .and_then(|header| header.is_archived)
+            .is_some_and(|value| value != 0)
+    }
+
     pub fn title(&self) -> Option<String> {
         self.header
             .as_ref()
@@ -373,7 +381,7 @@ pub fn load_source(source_locator: &str) -> Result<CursorLoadedSource> {
 
 fn read_headers(conn: &Connection) -> Result<BTreeMap<String, CursorComposerHeader>> {
     let mut stmt = conn.prepare(
-        "SELECT composerId, createdAt, lastUpdatedAt, recency, value
+        "SELECT composerId, createdAt, lastUpdatedAt, recency, value, isArchived
          FROM composerHeaders ORDER BY composerId ASC",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -383,11 +391,12 @@ fn read_headers(conn: &Connection) -> Result<BTreeMap<String, CursorComposerHead
             row.get::<_, Option<i64>>(2)?,
             row.get::<_, Option<i64>>(3)?,
             row.get::<_, SqliteValue>(4)?,
+        row.get::<_, Option<i64>>(5)?,
         ))
     })?;
     let mut headers = BTreeMap::new();
     for row in rows {
-        let (composer_id, created_at, last_updated_at, recency, value) = row?;
+        let (composer_id, created_at, last_updated_at, recency, value, is_archived) = row?;
         let raw = sqlite_json_value(value)
             .with_context(|| format!("Invalid Cursor composerHeaders value for {composer_id}"))?;
         anyhow::ensure!(
@@ -401,7 +410,8 @@ fn read_headers(conn: &Connection) -> Result<BTreeMap<String, CursorComposerHead
         headers.insert(
             composer_id.clone(),
             CursorComposerHeader {
-                created_at,
+is_archived,
+created_at,
                 last_updated_at,
                 recency,
                 value: raw,

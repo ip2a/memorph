@@ -488,6 +488,7 @@ mod tests {
                 created_at: value.get("createdAt").and_then(Value::as_i64),
                 last_updated_at: value.get("lastUpdatedAt").and_then(Value::as_i64),
                 recency: value.get("recency").and_then(Value::as_i64),
+                is_archived: value.get("isArchived").and_then(Value::as_i64),
                 value,
             }),
             composer: composer.map(|raw| CursorComposerRecord {
