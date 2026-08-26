@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context as _, Result};
+use anyhow::{anyhow, Result};
 use axum::{
     extract::{Path as AxumPath, Query, State},
     http::StatusCode,
@@ -8,18 +8,14 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::{
-    fs,
-    io::Read,
-    path::{Component, Path, PathBuf},
-};
 use uuid::Uuid;
-use walkdir::WalkDir;
 
 use memorph::skills::{
     conflicts, context, coverage, discovery, graph, groups, health,
     invocation::{self, StatsQuery},
+    management,
     repository::{self, CatalogQuery},
     scanner::{self, ScanMode},
 };
@@ -56,6 +52,18 @@ struct SkillMutation {
     scope_kind: Option<String>,
     #[serde(default)]
     workspace_dir: Option<String>,
+}
+
+impl SkillMutation {
+    fn into_target(self) -> management::MutationTarget {
+        management::MutationTarget {
+            skill_id: self.skill_id,
+            used_by: self.used_by,
+            source_used_by: self.source_used_by,
+            scope_kind: self.scope_kind,
+            workspace_dir: self.workspace_dir,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -214,143 +222,6 @@ fn default_agents() -> Vec<memorph::skills::inspection::SkillAgent> {
     discovery::agents(&home, None)
 }
 
-fn agent_id_for_used_by(used_by: &str) -> &str {
-    if used_by == "all" {
-        "agents-shared"
-    } else {
-        used_by
-    }
-}
-
-fn mutation_scope_kind(request: &SkillMutation) -> &str {
-    request.scope_kind.as_deref().unwrap_or("global")
-}
-
-fn validate_workspace_dir(workspace: &str) -> Result<PathBuf> {
-    let path = PathBuf::from(workspace);
-    if !path.is_absolute() || !path.is_dir() {
-        return Err(anyhow!(
-            "workspace_dir must be an existing absolute directory"
-        ));
-    }
-    Ok(path)
-}
-
-fn push_project_agents(
-    agents: &mut Vec<memorph::skills::inspection::SkillAgent>,
-    workspace: &Path,
-) {
-    for (agent_id, name, _, relative) in discovery::SKILL_AGENTS {
-        if agent_id == "agents-shared" {
-            continue;
-        }
-        let skills_dir = workspace.join(relative);
-        if agents.iter().any(|agent| {
-            agent.agent_id == agent_id
-                && agent.scope_kind == "project"
-                && agent.workspace_dir.as_deref() == Some(workspace)
-        }) {
-            continue;
-        }
-        agents.push(memorph::skills::inspection::SkillAgent {
-            agent_id: agent_id.into(),
-            name: name.into(),
-            skills_dir,
-            scope_kind: "project".into(),
-            workspace_dir: Some(workspace.to_path_buf()),
-        });
-    }
-}
-
-fn agents_for_mutation(
-    base: &[memorph::skills::inspection::SkillAgent],
-    request: &SkillMutation,
-) -> Result<Vec<memorph::skills::inspection::SkillAgent>> {
-    let mut agents = base.to_vec();
-    if mutation_scope_kind(request) == "project" {
-        let workspace = validate_workspace_dir(
-            request
-                .workspace_dir
-                .as_deref()
-                .ok_or_else(|| anyhow!("workspace_dir is required for project scope"))?,
-        )?;
-        push_project_agents(&mut agents, &workspace);
-    }
-    Ok(agents)
-}
-
-fn find_agent_for_mutation<'a>(
-    agents: &'a [memorph::skills::inspection::SkillAgent],
-    request: &SkillMutation,
-) -> Result<&'a memorph::skills::inspection::SkillAgent> {
-    let agent_id = agent_id_for_used_by(&request.used_by);
-    match mutation_scope_kind(request) {
-        "global" => agents
-            .iter()
-            .find(|agent| agent.agent_id == agent_id && agent.scope_kind == "global")
-            .ok_or_else(|| anyhow!("Unknown global agent: {}", request.used_by)),
-        "project" => {
-            let workspace = validate_workspace_dir(
-                request
-                    .workspace_dir
-                    .as_deref()
-                    .ok_or_else(|| anyhow!("workspace_dir is required for project scope"))?,
-            )?;
-            agents
-                .iter()
-                .find(|agent| {
-                    agent.agent_id == agent_id
-                        && agent.scope_kind == "project"
-                        && agent.workspace_dir.as_deref() == Some(workspace.as_path())
-                })
-                .ok_or_else(|| {
-                    anyhow!(
-                        "Unknown project agent {} for workspace {}",
-                        request.used_by,
-                        workspace.display()
-                    )
-                })
-        }
-        other => Err(anyhow!("Unknown scope_kind: {other}")),
-    }
-}
-
-fn installation_matches_mutation(
-    installation: &memorph::skills::inspection::SkillInstallation,
-    request: &SkillMutation,
-) -> bool {
-    if installation.used_by != request.used_by {
-        return false;
-    }
-    match mutation_scope_kind(request) {
-        "global" => installation.scope_kind == "global",
-        "project" => {
-            installation.scope_kind == "project"
-                && request.workspace_dir.as_deref() == installation.workspace_dir.as_deref()
-        }
-        _ => false,
-    }
-}
-
-fn discover(
-    agents: &[memorph::skills::inspection::SkillAgent],
-) -> memorph::skills::inspection::SkillsOverview {
-    discovery::discover(agents)
-}
-
-fn image_mime_type(ext: &str) -> &'static str {
-    match ext.to_ascii_lowercase().as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "svg" => "image/svg+xml",
-        "ico" => "image/x-icon",
-        "bmp" => "image/bmp",
-        _ => "application/octet-stream",
-    }
-}
-
 fn bundle_detail(
     overview: &memorph::skills::inspection::SkillsOverview,
     id: &str,
@@ -422,300 +293,60 @@ fn catalog_detail(
     })
 }
 
-fn validate_directory(directory: &str) -> Result<()> {
-    let path = Path::new(directory);
-    if directory.is_empty()
-        || directory == "."
-        || directory == ".."
-        || path.components().count() != 1
-        || !matches!(path.components().next(), Some(Component::Normal(_)))
+async fn get_skill(
+    State(state): State<SkillsState>,
+    AxumPath(skill_id): AxumPath<String>,
+) -> impl IntoResponse {
+    match bundle_detail(&discovery::discover(&state.agents), &skill_id)
+        .or_else(|_| catalog_detail(&state, &skill_id))
     {
-        return Err(anyhow!("Unsafe skill directory: {directory}"));
+        Ok(detail) => ApiResponse::success(detail).into_response(),
+        Err(error) => error_response(error),
     }
-    Ok(())
 }
 
-fn install(
-    agents: &[memorph::skills::inspection::SkillAgent],
-    request: &SkillMutation,
-) -> Result<memorph::skills::inspection::SkillsOverview> {
-    let overview = discover(agents);
+/// Installations of one logical skill (merged by normalized name), used by the
+/// consolidate dialog to let the user pick the canonical real directory among
+/// every scattered copy — including independent copies that live in separate
+/// catalog rows.
+async fn get_group_installations(
+    State(state): State<SkillsState>,
+    AxumPath(source_id): AxumPath<String>,
+) -> impl IntoResponse {
+    let overview = discovery::discover(&state.agents);
     let skill = overview
         .skills
         .iter()
-        .find(|skill| skill.id == request.skill_id)
-        .ok_or_else(|| anyhow!("Unknown skill: {}", request.skill_id))?;
-    validate_directory(&skill.directory)?;
-    let source = match request.source_used_by.as_deref() {
-        Some(used_by) => skill
-            .installations
-            .iter()
-            .find(|installation| installation.used_by == used_by)
-            .ok_or_else(|| anyhow!("Skill is not installed for source used_by: {used_by}"))?,
-        None if skill.conflict => {
-            return Err(anyhow!(
-                "Skill installations contain different content; source_used_by is required"
-            ));
-        }
-        None => skill
-            .installations
-            .first()
-            .ok_or_else(|| anyhow!("Skill has no source installation"))?,
-    };
-    let agent = find_agent_for_mutation(agents, request)?;
-    let destination = agent.skills_dir.join(&skill.directory);
-    if destination.exists() {
-        return Err(anyhow!(
-            "Skill {} is already installed for {} ({})",
-            skill.name,
-            agent.name,
-            agent.scope_kind
-        ));
+        .find(|skill| skill.id == source_id)
+        .cloned();
+    match skill {
+        Some(skill) => ApiResponse::success(skill).into_response(),
+        None => error_response(anyhow!("Unknown skill: {source_id}")),
     }
-
-    deploy_skill(&source.path, &destination)?;
-    Ok(discover(agents))
 }
 
-fn deploy_skill(source: &Path, destination: &Path) -> Result<()> {
-    let source = source
-        .canonicalize()
-        .with_context(|| format!("Failed to resolve {}", source.display()))?;
-    let parent = destination
-        .parent()
-        .ok_or_else(|| anyhow!("Skill destination has no parent"))?;
-    fs::create_dir_all(parent).with_context(|| format!("Failed to create {}", parent.display()))?;
-
-    if create_directory_symlink(&source, destination).is_ok() {
-        return Ok(());
-    }
-
-    copy_skill(&source, destination)?;
-    if let Err(error) = fs::write(
-        destination.join(memorph::skills::inspection::MANAGED_MARKER),
-        b"managed by memorph\n",
+async fn get_skill_tree(
+    State(state): State<SkillsState>,
+    AxumPath(skill_id): AxumPath<String>,
+) -> impl IntoResponse {
+    match management::resolve_skill_bundle_path(
+        &state.agents,
+        state.database_path.as_deref().map(|path| path.as_path()),
+        &skill_id,
+        None,
     ) {
-        let _ = fs::remove_dir_all(destination);
-        return Err(error).with_context(|| format!("Failed to mark {}", destination.display()));
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn create_directory_symlink(source: &Path, destination: &Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(source, destination)
-}
-
-#[cfg(windows)]
-fn create_directory_symlink(source: &Path, destination: &Path) -> std::io::Result<()> {
-    std::os::windows::fs::symlink_dir(source, destination)
-}
-
-fn copy_skill(source: &Path, destination: &Path) -> Result<()> {
-    let source = source
-        .canonicalize()
-        .with_context(|| format!("Failed to resolve {}", source.display()))?;
-    let parent = destination
-        .parent()
-        .ok_or_else(|| anyhow!("Skill destination has no parent"))?;
-    fs::create_dir_all(parent).with_context(|| format!("Failed to create {}", parent.display()))?;
-    fs::create_dir(destination)
-        .with_context(|| format!("Failed to create {}", destination.display()))?;
-
-    let result = (|| {
-        for entry in WalkDir::new(&source).min_depth(1).follow_links(false) {
-            let entry = entry?;
-            if entry.path().is_symlink() {
-                return Err(anyhow!(
-                    "Skill contains an unsupported symbolic link: {}",
-                    entry.path().display()
-                ));
-            }
-            let relative = entry.path().strip_prefix(&source)?;
-            let target = destination.join(relative);
-            if entry.file_type().is_dir() {
-                fs::create_dir(&target)?;
-            } else if entry.file_type().is_file() {
-                fs::copy(entry.path(), &target)?;
-            }
+        Ok(path) => {
+            let inspection = memorph::skills::inspection::inspect_bundle(&path);
+            ApiResponse::success(memorph::skills::inspection::SkillTree {
+                skill_id,
+                fingerprint: inspection.fingerprint,
+                assets: inspection.assets,
+                issues: inspection.issues,
+            })
+            .into_response()
         }
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_dir_all(destination);
+        Err(error) => error_response(error),
     }
-    result
-}
-
-fn uninstall(
-    agents: &[memorph::skills::inspection::SkillAgent],
-    request: &SkillMutation,
-) -> Result<memorph::skills::inspection::SkillsOverview> {
-    let overview = discover(agents);
-    let skill = overview
-        .skills
-        .iter()
-        .find(|skill| skill.id == request.skill_id)
-        .ok_or_else(|| anyhow!("Unknown skill: {}", request.skill_id))?;
-    let agent = find_agent_for_mutation(agents, request)?;
-    let installation = skill
-        .installations
-        .iter()
-        .find(|installation| installation_matches_mutation(installation, request))
-        .ok_or_else(|| {
-            anyhow!(
-                "Skill is not installed for {} ({})",
-                agent.name,
-                agent.scope_kind
-            )
-        })?;
-    let directory = installation
-        .path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| anyhow!("Skill installation has no directory name"))?;
-    validate_directory(directory)?;
-    let expected = agent.skills_dir.join(directory);
-    if installation.path != expected || !installation.managed {
-        return Err(anyhow!("Refusing to remove a user-owned skill"));
-    }
-    if expected
-        .symlink_metadata()
-        .is_ok_and(|metadata| metadata.file_type().is_symlink())
-    {
-        fs::remove_file(&expected)
-            .with_context(|| format!("Failed to remove symbolic link {}", expected.display()))?;
-    } else if expected
-        .join(memorph::skills::inspection::MANAGED_MARKER)
-        .is_file()
-    {
-        fs::remove_dir_all(&expected)
-            .with_context(|| format!("Failed to remove {}", expected.display()))?;
-    } else {
-        return Err(anyhow!("Refusing to remove a user-owned skill"));
-    }
-    Ok(discover(agents))
-}
-
-/// Remove a specific set of installations from disk — the installations
-/// belonging to one catalog row. Symlinks and the real source directory are
-/// both removed; unlike [`uninstall`], user-owned directories (the real source)
-/// go too, which is what "delete this copy" has to mean. Safety: each path is
-/// checked to be exactly `<skills_dir>/<validated-directory>` before removal, so
-/// we never follow a stray path elsewhere. Removal is driven by the actual
-/// filesystem type (`symlink_metadata`), so the stored `install_kind` is only
-/// informational.
-fn remove_catalog_installations(
-    agents: &[memorph::skills::inspection::SkillAgent],
-    installations: &[repository::CatalogInstallation],
-) -> Result<()> {
-    for installation in installations {
-        let path = std::path::Path::new(&installation.install_path);
-        let agent = agents
-            .iter()
-            .find(|agent| agent.agent_id == agent_id_for_used_by(&installation.used_by))
-            .ok_or_else(|| anyhow!("Unknown agent for installation: {}", installation.used_by))?;
-        let directory = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .ok_or_else(|| anyhow!("Skill installation has no directory name"))?;
-        validate_directory(directory)?;
-        let expected = agent.skills_dir.join(directory);
-        if path != expected {
-            return Err(anyhow!(
-                "Refusing to delete {}: expected it under {}",
-                path.display(),
-                agent.skills_dir.display()
-            ));
-        }
-        let is_link = path
-            .symlink_metadata()
-            .is_ok_and(|metadata| metadata.file_type().is_symlink());
-        if is_link {
-            // remove_file on a symlink removes the link itself, not its target.
-            fs::remove_file(path)
-                .with_context(|| format!("Failed to remove symlink {}", path.display()))?;
-        } else if path.is_dir() {
-            fs::remove_dir_all(path)
-                .with_context(|| format!("Failed to remove {}", path.display()))?;
-        }
-    }
-    Ok(())
-}
-
-fn installation_to_catalog_record(
-    installation: &memorph::skills::inspection::SkillInstallation,
-) -> repository::CatalogInstallation {
-    repository::CatalogInstallation {
-        used_by: installation.used_by.clone(),
-        scope_kind: installation.scope_kind.clone(),
-        workspace_dir: installation.workspace_dir.clone(),
-        install_path: installation.path.to_string_lossy().into_owned(),
-        install_kind: match installation.deployment_mode.as_str() {
-            "symlink" => "symlink",
-            "copy" => "managed-copy",
-            _ => "directory",
-        }
-        .into(),
-        symlink_target: installation.symlink_target.clone(),
-        link_status: installation.link_status.clone(),
-        status: "active".into(),
-    }
-}
-
-/// Remove one installation from disk. Deleting a real directory also removes
-/// every symlink in the same logical skill that resolves to it.
-fn delete_installation_at_path(
-    agents: &[memorph::skills::inspection::SkillAgent],
-    install_path: &str,
-) -> Result<String> {
-    let overview = discover(agents);
-    let target = PathBuf::from(install_path);
-    let skill = overview
-        .skills
-        .iter()
-        .find(|skill| skill.installations.iter().any(|item| item.path == target))
-        .ok_or_else(|| anyhow!("Unknown installation path: {install_path}"))?;
-    let is_link = target
-        .symlink_metadata()
-        .is_ok_and(|metadata| metadata.file_type().is_symlink());
-    let mut to_remove = Vec::new();
-    if is_link {
-        let installation = skill
-            .installations
-            .iter()
-            .find(|item| item.path == target)
-            .ok_or_else(|| anyhow!("Unknown installation path: {install_path}"))?;
-        to_remove.push(installation.clone());
-    } else {
-        let canonical = target
-            .canonicalize()
-            .with_context(|| format!("Failed to resolve {install_path}"))?;
-        for installation in &skill.installations {
-            if installation.path == target {
-                to_remove.push(installation.clone());
-                continue;
-            }
-            let other_is_link = installation
-                .path
-                .symlink_metadata()
-                .is_ok_and(|metadata| metadata.file_type().is_symlink());
-            if other_is_link
-                && installation
-                    .path
-                    .canonicalize()
-                    .is_ok_and(|resolved| resolved == canonical)
-            {
-                to_remove.push(installation.clone());
-            }
-        }
-    }
-    let records = to_remove
-        .iter()
-        .map(installation_to_catalog_record)
-        .collect::<Vec<_>>();
-    remove_catalog_installations(agents, &records)?;
-    Ok(skill.id.clone())
 }
 
 #[derive(Debug, Deserialize)]
@@ -736,196 +367,28 @@ struct SkillFilePreview {
     content: String,
 }
 
-fn resolve_skill_bundle_path(
-    state: &SkillsState,
-    skill_id: &str,
-    used_by: Option<&str>,
-) -> Result<PathBuf> {
-    let overview = discover(&state.agents);
-    if let Some(skill) = overview.skills.iter().find(|skill| skill.id == skill_id) {
-        let installation = match used_by {
-            Some(agent) => skill
-                .installations
-                .iter()
-                .find(|item| item.used_by == agent)
-                .ok_or_else(|| anyhow!("Skill is not installed for {agent}"))?,
-            None => skill
-                .installations
-                .first()
-                .ok_or_else(|| anyhow!("Skill has no installation"))?,
-        };
-        return Ok(installation.path.clone());
-    }
-
-    let item = match state.database_path.as_deref() {
-        Some(path) => repository::get_catalog_item_path(path, skill_id)?,
-        None => repository::get_catalog_item_default(skill_id)?,
-    }
-    .ok_or_else(|| anyhow!("Unknown skill: {skill_id}"))?;
-    let installation = match used_by {
-        Some(agent) => item
-            .installations
-            .iter()
-            .find(|item| item.status == "active" && item.used_by == agent)
-            .or_else(|| item.installations.iter().find(|item| item.used_by == agent))
-            .ok_or_else(|| anyhow!("Skill is not installed for {agent}"))?,
-        None => item
-            .installations
-            .iter()
-            .find(|item| item.status == "active")
-            .or_else(|| item.installations.first())
-            .ok_or_else(|| anyhow!("Skill has no installation"))?,
-    };
-    Ok(PathBuf::from(&installation.install_path))
-}
-
-fn resolve_skill_file(
-    state: &SkillsState,
-    skill_id: &str,
-    query: &SkillFileQuery,
-) -> Result<(memorph::skills::inspection::SkillAsset, PathBuf)> {
-    let bundle_path = resolve_skill_bundle_path(state, skill_id, query.used_by.as_deref())?;
-    let relative = Path::new(&query.path);
-    if relative.is_absolute()
-        || relative.components().count() == 0
-        || relative
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err(anyhow!("Unsafe skill file path"));
-    }
-    let inspection = memorph::skills::inspection::inspect_bundle(&bundle_path);
-    let asset = inspection
-        .assets
-        .iter()
-        .find(|asset| asset.path == query.path)
-        .ok_or_else(|| anyhow!("Unknown skill asset: {}", query.path))?
-        .clone();
-    if !asset.previewable {
-        return Err(anyhow!("Skill asset is not previewable"));
-    }
-    let root = bundle_path.canonicalize()?;
-    let target = root.join(relative).canonicalize()?;
-    if !target.starts_with(&root) {
-        return Err(anyhow!("Skill file escapes its bundle"));
-    }
-    Ok((asset, target))
-}
-
-fn preview_file(
-    state: &SkillsState,
-    skill_id: &str,
-    query: &SkillFileQuery,
-) -> Result<SkillFilePreview> {
-    let (asset, target) = resolve_skill_file(state, skill_id, query)?;
-    let file = fs::File::open(&target)?;
-    let mut bytes = Vec::new();
-    file.take(memorph::skills::inspection::MAX_PREVIEW_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > memorph::skills::inspection::MAX_PREVIEW_BYTES {
-        return Err(anyhow!("Skill asset exceeds preview limit"));
-    }
-
-    let extension = asset.extension.as_deref().unwrap_or("");
-    let (encoding, mime_type, content) =
-        if memorph::skills::inspection::is_image_extension(extension) {
-            use base64::{engine::general_purpose::STANDARD, Engine as _};
-            (
-                "base64".to_string(),
-                Some(image_mime_type(extension).to_string()),
-                STANDARD.encode(&bytes),
-            )
-        } else {
-            let text =
-                String::from_utf8(bytes).map_err(|_| anyhow!("Skill asset is not UTF-8 text"))?;
-            ("text".to_string(), None, text)
-        };
-
-    Ok(SkillFilePreview {
-        path: asset.path.clone(),
-        category: asset.category.clone(),
-        extension: asset.extension.clone(),
-        bytes: asset.bytes,
-        encoding,
-        mime_type,
-        content,
-    })
-}
-
 #[derive(Debug, Deserialize)]
 struct SkillFileUpdate {
     content: String,
 }
 
-fn write_skill_file(
-    state: &SkillsState,
-    skill_id: &str,
-    query: &SkillFileQuery,
-    update: &SkillFileUpdate,
-) -> Result<SkillFilePreview> {
-    let (asset, target) = resolve_skill_file(state, skill_id, query)?;
-    let extension = asset.extension.as_deref().unwrap_or("");
-    if memorph::skills::inspection::is_image_extension(extension) {
-        return Err(anyhow!("Skill asset is not editable"));
-    }
-    if update.content.len() as u64 > memorph::skills::inspection::MAX_PREVIEW_BYTES {
-        return Err(anyhow!("Skill asset exceeds preview limit"));
-    }
-    if update.content.contains('\0') {
-        return Err(anyhow!("Skill asset is not UTF-8 text"));
-    }
-    memorph::storage::atomic_write::write_string_atomic(&target, &update.content)?;
-    preview_file(state, skill_id, query)
-}
-
-async fn get_skill(
-    State(state): State<SkillsState>,
-    AxumPath(skill_id): AxumPath<String>,
-) -> impl IntoResponse {
-    match bundle_detail(&discover(&state.agents), &skill_id)
-        .or_else(|_| catalog_detail(&state, &skill_id))
-    {
-        Ok(detail) => ApiResponse::success(detail).into_response(),
-        Err(error) => error_response(error),
+fn skill_file_ref(skill_id: String, query: SkillFileQuery) -> management::SkillFileRef {
+    management::SkillFileRef {
+        skill_id,
+        used_by: query.used_by,
+        rel_path: query.path,
     }
 }
 
-/// Installations of one logical skill (merged by normalized name), used by the
-/// consolidate dialog to let the user pick the canonical real directory among
-/// every scattered copy — including independent copies that live in separate
-/// catalog rows.
-async fn get_group_installations(
-    State(state): State<SkillsState>,
-    AxumPath(source_id): AxumPath<String>,
-) -> impl IntoResponse {
-    let overview = discover(&state.agents);
-    let skill = overview
-        .skills
-        .iter()
-        .find(|skill| skill.id == source_id)
-        .cloned();
-    match skill {
-        Some(skill) => ApiResponse::success(skill).into_response(),
-        None => error_response(anyhow!("Unknown skill: {source_id}")),
-    }
-}
-
-async fn get_skill_tree(
-    State(state): State<SkillsState>,
-    AxumPath(skill_id): AxumPath<String>,
-) -> impl IntoResponse {
-    match resolve_skill_bundle_path(&state, &skill_id, None) {
-        Ok(path) => {
-            let inspection = memorph::skills::inspection::inspect_bundle(&path);
-            ApiResponse::success(memorph::skills::inspection::SkillTree {
-                skill_id,
-                fingerprint: inspection.fingerprint,
-                assets: inspection.assets,
-                issues: inspection.issues,
-            })
-            .into_response()
-        }
-        Err(error) => error_response(error),
+fn file_preview(content: management::SkillFileContent) -> SkillFilePreview {
+    SkillFilePreview {
+        path: content.asset.path,
+        category: content.asset.category,
+        extension: content.asset.extension,
+        bytes: content.asset.bytes,
+        encoding: content.encoding,
+        mime_type: content.mime_type,
+        content: content.content,
     }
 }
 
@@ -934,8 +397,13 @@ async fn get_skill_file(
     AxumPath(skill_id): AxumPath<String>,
     Query(query): Query<SkillFileQuery>,
 ) -> impl IntoResponse {
-    match preview_file(&state, &skill_id, &query) {
-        Ok(preview) => ApiResponse::success(preview).into_response(),
+    let file = skill_file_ref(skill_id, query);
+    match management::read_skill_file(
+        &state.agents,
+        state.database_path.as_deref().map(|path| path.as_path()),
+        &file,
+    ) {
+        Ok(content) => ApiResponse::success(file_preview(content)).into_response(),
         Err(error) => error_response(error),
     }
 }
@@ -946,8 +414,14 @@ async fn put_skill_file(
     Query(query): Query<SkillFileQuery>,
     Json(update): Json<SkillFileUpdate>,
 ) -> impl IntoResponse {
-    match write_skill_file(&state, &skill_id, &query, &update) {
-        Ok(preview) => ApiResponse::success(preview).into_response(),
+    let file = skill_file_ref(skill_id, query);
+    match management::write_skill_file(
+        &state.agents,
+        state.database_path.as_deref().map(|path| path.as_path()),
+        &file,
+        &update.content,
+    ) {
+        Ok(content) => ApiResponse::success(file_preview(content)).into_response(),
         Err(error) => error_response(error),
     }
 }
@@ -1002,11 +476,12 @@ async fn scan_skills(
     // only), then hand the heavy persist off to a background thread. The
     // request returns immediately with a queued acknowledgement so the UI can
     // poll list_skills and watch needs_scan flip to false.
-    let overview =
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| discover(&agents))) {
-            Ok(value) => value,
-            Err(_) => return error_response(anyhow!("Skill discovery failed")),
-        };
+    let overview = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        discovery::discover(&agents)
+    })) {
+        Ok(value) => value,
+        Err(_) => return error_response(anyhow!("Skill discovery failed")),
+    };
     let roots_scanned = overview.agents.len();
     let skills_seen = overview.skills.len();
     std::thread::Builder::new()
@@ -1295,8 +770,8 @@ async fn list_skills(
         Ok(mut page) => {
             let mut agents = state.agents.as_ref().clone();
             if let Some(workspace) = query.workspace.as_deref() {
-                match validate_workspace_dir(workspace) {
-                    Ok(path) => push_project_agents(&mut agents, &path),
+                match management::validate_workspace_dir(workspace) {
+                    Ok(path) => management::push_project_agents(&mut agents, &path),
                     Err(error) => return error_response(error),
                 }
             }
@@ -1613,30 +1088,17 @@ async fn get_skill_invocations(
     }
 }
 
-fn persist_installation_change(
-    state: &SkillsState,
-    overview: &memorph::skills::inspection::SkillsOverview,
-) -> Result<()> {
-    match state.database_path.as_deref() {
-        Some(path) => scanner::persist_path(path, overview, ScanMode::Incremental),
-        None => scanner::persist_default(overview, ScanMode::Incremental),
-    }?;
-    Ok(())
-}
-
 async fn install_skill(
     State(state): State<SkillsState>,
     Json(request): Json<SkillMutation>,
 ) -> impl IntoResponse {
-    let agents = match agents_for_mutation(&state.agents, &request) {
-        Ok(value) => value,
-        Err(error) => return error_response(error),
-    };
-    match install(&agents, &request) {
-        Ok(overview) => match persist_installation_change(&state, &overview) {
-            Ok(()) => ApiResponse::success(overview).into_response(),
-            Err(error) => error_response(error),
-        },
+    let target = request.into_target();
+    match management::install(
+        &state.agents,
+        state.database_path.as_deref().map(|path| path.as_path()),
+        &target,
+    ) {
+        Ok(overview) => ApiResponse::success(overview).into_response(),
         Err(error) => error_response(error),
     }
 }
@@ -1645,15 +1107,13 @@ async fn uninstall_skill(
     State(state): State<SkillsState>,
     Json(request): Json<SkillMutation>,
 ) -> impl IntoResponse {
-    let agents = match agents_for_mutation(&state.agents, &request) {
-        Ok(value) => value,
-        Err(error) => return error_response(error),
-    };
-    match uninstall(&agents, &request) {
-        Ok(overview) => match persist_installation_change(&state, &overview) {
-            Ok(()) => ApiResponse::success(overview).into_response(),
-            Err(error) => error_response(error),
-        },
+    let target = request.into_target();
+    match management::uninstall(
+        &state.agents,
+        state.database_path.as_deref().map(|path| path.as_path()),
+        &target,
+    ) {
+        Ok(overview) => ApiResponse::success(overview).into_response(),
         Err(error) => error_response(error),
     }
 }
@@ -1662,92 +1122,26 @@ async fn delete_skill(
     State(state): State<SkillsState>,
     AxumPath(skill_id): AxumPath<String>,
 ) -> impl IntoResponse {
-    // Per-row delete: `skill_id` is the catalog row's hash id (one list entry).
-    // Load that row's installations, remove only those from disk, then drop the
-    // catalog row + children by id — sibling copies under the same name survive.
-    let result: Result<()> = (|| {
-        let mut store = stats_store(&state)?;
-        let item = repository::get_catalog_item(store.connection(), &skill_id)?
-            .ok_or_else(|| anyhow!("Unknown skill: {skill_id}"))?;
-        remove_catalog_installations(&state.agents, &item.installations)?;
-        repository::delete_skill(store.connection_mut(), &skill_id)?;
-        Ok(())
-    })();
-    match result {
-        Ok(_) => ApiResponse::success(discover(&state.agents)).into_response(),
+    match management::delete_skill(
+        &state.agents,
+        state.database_path.as_deref().map(|path| path.as_path()),
+        &skill_id,
+    ) {
+        Ok(overview) => ApiResponse::success(overview).into_response(),
         Err(error) => error_response(error),
     }
-}
-
-/// Archive a skill's canonical directory into `<agent>/skills/.disabled/` and
-/// remove every other installation. The real directory is renamed in place
-/// (same filesystem → O(1)), so a large skill is not copied. The moved source
-/// is gone from its old path, so [`remove_catalog_installations`] silently
-/// skips it while clearing the remaining symlinks and managed copies.
-fn archive_skill(
-    agents: &[memorph::skills::inspection::SkillAgent],
-    item: &repository::CatalogItem,
-) -> Result<()> {
-    let real = item
-        .installations
-        .iter()
-        .find(|installation| {
-            installation.status == "active"
-                && matches!(
-                    installation.install_kind.as_str(),
-                    "directory" | "managed-copy"
-                )
-        })
-        .ok_or_else(|| anyhow!("Cannot disable: no managed source directory to archive"))?;
-    let real_path = std::path::Path::new(&real.install_path);
-    let directory = real_path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| anyhow!("Skill installation has no directory name"))?;
-    validate_directory(directory)?;
-    let agent = agents
-        .iter()
-        .find(|agent| agent.agent_id == agent_id_for_used_by(&real.used_by))
-        .ok_or_else(|| anyhow!("Unknown agent: {}", real.used_by))?;
-    let archive_root = agent.skills_dir.join(".disabled");
-    fs::create_dir_all(&archive_root)
-        .with_context(|| format!("Failed to create {}", archive_root.display()))?;
-    let archive_target = archive_root.join(directory);
-    if archive_target.exists() {
-        return Err(anyhow!(
-            "Skill is already archived at {}",
-            archive_target.display()
-        ));
-    }
-    fs::rename(real_path, &archive_target)
-        .with_context(|| format!("Failed to archive {}", real_path.display()))?;
-    remove_catalog_installations(agents, &item.installations)?;
-    Ok(())
 }
 
 async fn disable_skill(
     State(state): State<SkillsState>,
     Json(request): Json<SkillIdRequest>,
 ) -> impl IntoResponse {
-    // Disable = delete from the catalog, but preserve the files in `.disabled/`.
-    // The skill vanishes from the list (no misleading "missing" badge); the
-    // archive folder is the durable record and survives a catalog rebuild.
-    // The trailing persist syncs the scan fingerprint to the post-archive disk
-    // state, so a later `enable` is detected as a change instead of skipped.
-    let result: Result<()> = (|| {
-        let mut store = stats_store(&state)?;
-        let item = repository::get_catalog_item(store.connection(), &request.skill_id)?
-            .ok_or_else(|| anyhow!("Unknown skill: {}", request.skill_id))?;
-        archive_skill(&state.agents, &item)?;
-        repository::delete_skill(store.connection_mut(), &request.skill_id)?;
-        Ok(())
-    })();
-    let overview = discover(&state.agents);
-    match result {
-        Ok(_) => {
-            let _ = persist_installation_change(&state, &overview);
-            ApiResponse::success(overview).into_response()
-        }
+    match management::disable_skill(
+        &state.agents,
+        state.database_path.as_deref().map(|path| path.as_path()),
+        &request.skill_id,
+    ) {
+        Ok(overview) => ApiResponse::success(overview).into_response(),
         Err(error) => error_response(error),
     }
 }
@@ -1756,37 +1150,13 @@ async fn enable_skill(
     State(state): State<SkillsState>,
     Json(request): Json<EnableSkillRequest>,
 ) -> impl IntoResponse {
-    // Restore an archived skill: move it back out of `.disabled/` into its
-    // agent's skills dir, then rescan so the catalog row is recreated.
-    let result: Result<()> = (|| {
-        let agent = state
-            .agents
-            .iter()
-            .find(|agent| agent.agent_id == agent_id_for_used_by(&request.used_by))
-            .ok_or_else(|| anyhow!("Unknown agent: {}", request.used_by))?;
-        validate_directory(&request.directory)?;
-        let archive_path = agent.skills_dir.join(".disabled").join(&request.directory);
-        if !archive_path.join("SKILL.md").is_file() {
-            return Err(anyhow!("No archived skill at {}", archive_path.display()));
-        }
-        let target = agent.skills_dir.join(&request.directory);
-        if target.exists() {
-            return Err(anyhow!(
-                "A skill named '{}' is already active in {}",
-                request.directory,
-                agent.skills_dir.display()
-            ));
-        }
-        fs::rename(&archive_path, &target)
-            .with_context(|| format!("Failed to restore {}", archive_path.display()))?;
-        Ok(())
-    })();
-    match result {
-        Ok(_) => {
-            let overview = discover(&state.agents);
-            let _ = persist_installation_change(&state, &overview);
-            ApiResponse::success(overview).into_response()
-        }
+    match management::enable_skill(
+        &state.agents,
+        state.database_path.as_deref().map(|path| path.as_path()),
+        &request.used_by,
+        &request.directory,
+    ) {
+        Ok(overview) => ApiResponse::success(overview).into_response(),
         Err(error) => error_response(error),
     }
 }
@@ -1806,168 +1176,30 @@ struct DisabledSkillsPage {
     items: Vec<DisabledSkill>,
 }
 
-/// Scan each global agent's `.disabled/` folder one level deep. The archive
-/// folder is the single source of truth for disabled skills: anything parked
-/// here is disabled, independent of the catalog, so the list survives a full
-/// rebuild.
 async fn list_disabled_skills(State(state): State<SkillsState>) -> impl IntoResponse {
-    let mut items = Vec::new();
-    for agent in state.agents.iter() {
-        if agent.scope_kind != "global" {
-            continue;
-        }
-        let archive_root = agent.skills_dir.join(".disabled");
-        let Ok(children) = fs::read_dir(&archive_root) else {
-            continue;
-        };
-        for child in children.flatten() {
-            let path = child.path();
-            let is_hidden = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with('.'));
-            if is_hidden || !path.is_dir() || !path.join("SKILL.md").is_file() {
-                continue;
-            }
-            let Some(directory) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            let frontmatter = memorph::skills::inspection::read_frontmatter(&path.join("SKILL.md"));
-            let name = frontmatter
-                .get("name")
-                .cloned()
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| directory.to_string());
-            let description = frontmatter
-                .get("description")
-                .cloned()
-                .filter(|value| !value.is_empty());
-            items.push(DisabledSkill {
-                used_by: if agent.agent_id == "agents-shared" {
-                    "all".into()
-                } else {
-                    agent.agent_id.clone()
-                },
-                directory: directory.to_string(),
-                name,
-                description,
-                archive_path: path.to_string_lossy().into_owned(),
-            });
-        }
-    }
-    items.sort_by(|a, b| {
-        a.name
-            .cmp(&b.name)
-            .then_with(|| a.directory.cmp(&b.directory))
-    });
-    ApiResponse::success(DisabledSkillsPage { items }).into_response()
-}
-
-/// Repoint every installation of a logical skill to one canonical directory.
-/// Discovery merges installations by normalized name, so this reaches every
-/// scattered copy — independent directories across agents collapse into
-/// symlinks at the chosen canonical path, and the catalog rows merge on the
-/// next scan. The picked installation may itself be a symlink; it is resolved
-/// to its target, which becomes the canonical real directory.
-fn consolidate_to_canonical(
-    overview: &memorph::skills::inspection::SkillsOverview,
-    canonical_install_path: &str,
-) -> Result<String> {
-    let agents = &overview.agents;
-    let canonical_path = std::path::Path::new(canonical_install_path);
-    let canonical_real = canonical_path
-        .canonicalize()
-        .with_context(|| format!("Failed to resolve canonical path {canonical_install_path}"))?;
-    if !canonical_real.join("SKILL.md").is_file() {
-        return Err(anyhow!(
-            "Canonical path is not a skill directory: {}",
-            canonical_real.display()
-        ));
-    }
-    let skill = overview
-        .skills
-        .iter()
-        .find(|skill| {
-            skill.installations.iter().any(|installation| {
-                installation.path == canonical_path || installation.path == canonical_real
-            })
+    let items = management::list_disabled(&state.agents)
+        .into_iter()
+        .map(|skill| DisabledSkill {
+            used_by: skill.used_by,
+            directory: skill.directory,
+            name: skill.name,
+            description: skill.description,
+            archive_path: skill.archive_path,
         })
-        .ok_or_else(|| anyhow!("Canonical path is not a known skill installation"))?;
-    for installation in &skill.installations {
-        let path = &installation.path;
-        // Already resolves to the canonical real directory — leave it. This
-        // covers the picked installation, its target, and any symlink already
-        // pointing there.
-        let resolved = path.canonicalize().unwrap_or_else(|_| path.clone());
-        if resolved == canonical_real {
-            continue;
-        }
-        let agent = agents
-            .iter()
-            .find(|agent| agent.agent_id == agent_id_for_used_by(&installation.used_by))
-            .ok_or_else(|| anyhow!("Unknown agent: {}", installation.used_by))?;
-        let directory = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .ok_or_else(|| anyhow!("Skill installation has no directory name"))?;
-        validate_directory(directory)?;
-        if path != &agent.skills_dir.join(directory) {
-            return Err(anyhow!(
-                "Refusing to consolidate {}: expected it under {}",
-                path.display(),
-                agent.skills_dir.display()
-            ));
-        }
-        if path
-            .symlink_metadata()
-            .is_ok_and(|metadata| metadata.file_type().is_symlink())
-        {
-            fs::remove_file(path)
-                .with_context(|| format!("Failed to remove symlink {}", path.display()))?;
-        } else if path.is_dir() {
-            fs::remove_dir_all(path)
-                .with_context(|| format!("Failed to remove {}", path.display()))?;
-        }
-        create_directory_symlink(&canonical_real, path).with_context(|| {
-            format!(
-                "Failed to link {} -> {}",
-                path.display(),
-                canonical_real.display()
-            )
-        })?;
-    }
-    Ok(skill.id.clone())
+        .collect();
+    ApiResponse::success(DisabledSkillsPage { items }).into_response()
 }
 
 async fn consolidate_skill(
     State(state): State<SkillsState>,
     Json(request): Json<ConsolidateRequest>,
 ) -> impl IntoResponse {
-    let before = discover(&state.agents);
-    match consolidate_to_canonical(&before, &request.canonical_path) {
-        Ok(normalized_name) => {
-            let overview = discover(&state.agents);
-            let _ = persist_installation_change(&state, &overview);
-            // Scattered copies merged into one canonical row leave the superseded
-            // rows without an active installation; purge them so they don't linger
-            // as "missing" entries next to the merged skill.
-            if let Ok(mut store) = stats_store(&state) {
-                let conn = store.connection_mut();
-                // Before the merged-away rows are deleted, move their group
-                // assignments onto the surviving skill so consolidation does
-                // not silently drop a user's grouping.
-                let inactive_ids =
-                    repository::inactive_catalog_ids_for_name(conn, &normalized_name)
-                        .unwrap_or_default();
-                if let Ok(Some(survivor)) =
-                    repository::active_catalog_id_for_name(conn, &normalized_name)
-                {
-                    let _ = groups::migrate_members(conn, &inactive_ids, &survivor);
-                }
-                let _ = repository::delete_inactive_catalog_rows_for_name(conn, &normalized_name);
-            }
-            ApiResponse::success(overview).into_response()
-        }
+    match management::consolidate(
+        &state.agents,
+        state.database_path.as_deref().map(|path| path.as_path()),
+        &request.canonical_path,
+    ) {
+        Ok(overview) => ApiResponse::success(overview).into_response(),
         Err(error) => error_response(error),
     }
 }
@@ -1976,28 +1208,12 @@ async fn remove_symlinks_skill(
     State(state): State<SkillsState>,
     Json(request): Json<SkillIdRequest>,
 ) -> impl IntoResponse {
-    // Strip every symlink installation of this skill; real directories and
-    // managed copies stay in place. Reuses the per-installation remover, which
-    // only touches symlinks when fed symlink-only installations.
-    let result: Result<()> = (|| {
-        let store = stats_store(&state)?;
-        let item = repository::get_catalog_item(store.connection(), &request.skill_id)?
-            .ok_or_else(|| anyhow!("Unknown skill: {}", request.skill_id))?;
-        let symlinks: Vec<repository::CatalogInstallation> = item
-            .installations
-            .iter()
-            .filter(|installation| installation.install_kind == "symlink")
-            .cloned()
-            .collect();
-        remove_catalog_installations(&state.agents, &symlinks)?;
-        Ok(())
-    })();
-    let overview = discover(&state.agents);
-    match result {
-        Ok(()) => {
-            let _ = persist_installation_change(&state, &overview);
-            ApiResponse::success(overview).into_response()
-        }
+    match management::remove_symlinks(
+        &state.agents,
+        state.database_path.as_deref().map(|path| path.as_path()),
+        &request.skill_id,
+    ) {
+        Ok(overview) => ApiResponse::success(overview).into_response(),
         Err(error) => error_response(error),
     }
 }
@@ -2006,20 +1222,12 @@ async fn delete_installation(
     State(state): State<SkillsState>,
     Json(request): Json<DeleteInstallationRequest>,
 ) -> impl IntoResponse {
-    let result: Result<()> = (|| {
-        let normalized_name = delete_installation_at_path(&state.agents, &request.install_path)?;
-        let overview = discover(&state.agents);
-        persist_installation_change(&state, &overview)?;
-        if let Ok(mut store) = stats_store(&state) {
-            let _ = repository::delete_inactive_catalog_rows_for_name(
-                store.connection_mut(),
-                &normalized_name,
-            );
-        }
-        Ok(())
-    })();
-    match result {
-        Ok(()) => ApiResponse::success(discover(&state.agents)).into_response(),
+    match management::delete_installation(
+        &state.agents,
+        state.database_path.as_deref().map(|path| path.as_path()),
+        &request.install_path,
+    ) {
+        Ok(overview) => ApiResponse::success(overview).into_response(),
         Err(error) => error_response(error),
     }
 }
@@ -2134,6 +1342,7 @@ mod tests {
     use super::*;
     use axum::{body::Body, http::Request};
     use serde_json::Value;
+    use std::fs;
     use tower::ServiceExt;
 
     fn agents(root: &Path) -> Vec<memorph::skills::inspection::SkillAgent> {
@@ -2211,7 +1420,7 @@ mod tests {
         );
         create_skill(root.path(), "gemini", "fallback", "# No frontmatter");
 
-        let overview = discover(&agents(root.path()));
+        let overview = discovery::discover(&agents(root.path()));
         assert_eq!(overview.skills.len(), 2);
         let writer = overview
             .skills
@@ -2235,7 +1444,7 @@ mod tests {
         fs::create_dir_all(path.join("scripts")).unwrap();
         fs::write(path.join("scripts/run.sh"), "sudo rm -rf /tmp/example").unwrap();
 
-        let overview = discover(&agents(root.path()));
+        let overview = discovery::discover(&agents(root.path()));
         let skill = &overview.skills[0];
         let messages = skill
             .issues
@@ -2258,144 +1467,20 @@ mod tests {
             "versioned",
             "---\nname: Versioned\nversion: 1.2.3\nrepository: https://example.test/skills\n---\n",
         );
-        let detail = bundle_detail(&discover(&agents(root.path())), "versioned").unwrap();
+        let detail =
+            bundle_detail(&discovery::discover(&agents(root.path())), "versioned").unwrap();
         let frontmatter = detail.frontmatter;
         assert_eq!(frontmatter.get("version"), Some(&"1.2.3".to_string()));
         assert_eq!(
             frontmatter.get("repository"),
             Some(&"https://example.test/skills".to_string())
         );
-        let overview = discover(&agents(root.path()));
+        let overview = discovery::discover(&agents(root.path()));
         assert!(overview.skills[0]
             .issues
             .iter()
             .any(|issue| issue.message.contains("missing frontmatter description")));
         assert!(path.join("SKILL.md").is_file());
-    }
-
-    #[test]
-    fn install_deploys_skill_and_rejects_duplicates() {
-        let root = tempfile::tempdir().unwrap();
-        let source = create_skill(root.path(), "claude", "writer", "---\nname: Writer\n---\n");
-        fs::write(source.join("example.txt"), "example").unwrap();
-        let agents = agents(root.path());
-        let request = SkillMutation {
-            skill_id: "writer".into(),
-            used_by: "codex".into(),
-            source_used_by: None,
-            scope_kind: None,
-            workspace_dir: None,
-        };
-
-        let overview = install(&agents, &request).unwrap();
-        let installed = root.path().join("codex/skills/writer");
-        assert_eq!(
-            fs::read_to_string(installed.join("example.txt")).unwrap(),
-            "example"
-        );
-        let installation = overview.skills[0]
-            .installations
-            .iter()
-            .find(|item| item.used_by == "codex")
-            .unwrap();
-        assert!(installation.managed);
-        assert!(matches!(
-            installation.deployment_mode.as_str(),
-            "symlink" | "copy"
-        ));
-        assert!(installation.link_valid);
-        assert_eq!(overview.skills[0].installations.len(), 2);
-        assert!(install(&agents, &request).is_err());
-    }
-
-    #[test]
-    fn uninstall_removes_managed_copy_but_refuses_user_owned_skill() {
-        let root = tempfile::tempdir().unwrap();
-        create_skill(root.path(), "claude", "writer", "# Writer");
-        let agents = agents(root.path());
-        let managed = SkillMutation {
-            skill_id: "writer".into(),
-            used_by: "codex".into(),
-            source_used_by: None,
-            scope_kind: None,
-            workspace_dir: None,
-        };
-        install(&agents, &managed).unwrap();
-        uninstall(&agents, &managed).unwrap();
-        assert!(!root.path().join("codex/skills/writer").exists());
-
-        let user_owned = SkillMutation {
-            skill_id: "writer".into(),
-            used_by: "claude".into(),
-            source_used_by: None,
-            scope_kind: None,
-            workspace_dir: None,
-        };
-        assert!(uninstall(&agents, &user_owned).is_err());
-        assert!(root.path().join("claude/skills/writer").exists());
-    }
-
-    #[test]
-    fn delete_skill_removes_symlink_and_user_owned_source_directory() {
-        let root = tempfile::tempdir().unwrap();
-        // Real, user-owned source under claude — the case uninstall refuses.
-        create_skill(root.path(), "claude", "writer", "# Writer");
-        let agents = agents(root.path());
-        // Managed deployment under codex (symlink or copy) pointing at it.
-        let managed = SkillMutation {
-            skill_id: "writer".into(),
-            used_by: "codex".into(),
-            source_used_by: None,
-            scope_kind: None,
-            workspace_dir: None,
-        };
-        install(&agents, &managed).unwrap();
-        assert!(root.path().join("claude/skills/writer").exists());
-        assert!(root.path().join("codex/skills/writer").exists());
-
-        // remove_catalog_installations takes the row's installation records and
-        // removes exactly those paths: the codex deployment AND the user-owned
-        // claude source directory. Removal follows the real filesystem type, so
-        // install_kind here is informational.
-        let installations = vec![
-            repository::CatalogInstallation {
-                used_by: "claude".into(),
-                scope_kind: "global".into(),
-                workspace_dir: None,
-                install_path: root
-                    .path()
-                    .join("claude/skills/writer")
-                    .to_string_lossy()
-                    .into_owned(),
-                install_kind: "directory".into(),
-                symlink_target: None,
-                link_status: "not-applicable".into(),
-                status: "active".into(),
-            },
-            repository::CatalogInstallation {
-                used_by: "codex".into(),
-                scope_kind: "global".into(),
-                workspace_dir: None,
-                install_path: root
-                    .path()
-                    .join("codex/skills/writer")
-                    .to_string_lossy()
-                    .into_owned(),
-                install_kind: "directory".into(),
-                symlink_target: None,
-                link_status: "not-applicable".into(),
-                status: "active".into(),
-            },
-        ];
-        remove_catalog_installations(&agents, &installations).unwrap();
-        assert!(
-            !root.path().join("codex/skills/writer").exists(),
-            "symlink/copy installation should be removed"
-        );
-        assert!(
-            !root.path().join("claude/skills/writer").exists(),
-            "user-owned source directory should be removed"
-        );
     }
 
     #[test]
@@ -2424,7 +1509,7 @@ mod tests {
             "---\nname: Writer\n---\n# Different",
         );
 
-        let overview = discover(&agents(root.path()));
+        let overview = discovery::discover(&agents(root.path()));
         let skill = &overview.skills[0];
         assert!(skill.conflict);
         assert_eq!(skill.statistics.scripts, 1);
@@ -2437,19 +1522,26 @@ mod tests {
             Some("Writes docs")
         );
         assert_eq!(detail.provider_metadata.len(), 1);
-        let missing_source = SkillMutation {
+        let database_path = root.path().join("skills-test.db");
+        let missing_source = management::MutationTarget {
             skill_id: "writer".into(),
             used_by: "gemini".into(),
             source_used_by: None,
             scope_kind: None,
             workspace_dir: None,
         };
-        assert!(install(&agents(root.path()), &missing_source).is_err());
-        let selected_source = SkillMutation {
+        assert!(
+            management::install(&agents(root.path()), Some(&database_path), &missing_source)
+                .is_err()
+        );
+        let selected_source = management::MutationTarget {
             source_used_by: Some("claude".into()),
             ..missing_source
         };
-        assert!(install(&agents(root.path()), &selected_source).is_ok());
+        assert!(
+            management::install(&agents(root.path()), Some(&database_path), &selected_source)
+                .is_ok()
+        );
     }
 
     #[cfg(unix)]
@@ -2469,72 +1561,6 @@ mod tests {
             .assets
             .iter()
             .any(|asset| asset.path.starts_with("outside/")));
-    }
-
-    #[test]
-    fn preview_rejects_traversal_and_unknown_binary_assets() {
-        let root = tempfile::tempdir().unwrap();
-        let skill = create_skill(root.path(), "claude", "writer", "# Writer");
-        fs::write(skill.join("image.bin"), [0_u8, 159, 146, 150]).unwrap();
-        fs::create_dir_all(skill.join("assets")).unwrap();
-        // Minimal 1x1 PNG
-        let png = [
-            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
-            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
-            0x00, 0x90, 0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x08,
-            0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x05, 0xFE,
-            0x02, 0xFE, 0xDC, 0xCC, 0x59, 0xE7, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
-            0xAE, 0x42, 0x60, 0x82,
-        ];
-        fs::write(skill.join("assets/icon.png"), png).unwrap();
-        let state = SkillsState {
-            agents: Arc::new(agents(root.path())),
-            database_path: None,
-            analysis_operations: Arc::new(Mutex::new(HashMap::new())),
-        };
-
-        assert!(preview_file(
-            &state,
-            "writer",
-            &SkillFileQuery {
-                path: "../secret".into(),
-                used_by: None
-            }
-        )
-        .is_err());
-        assert!(preview_file(
-            &state,
-            "writer",
-            &SkillFileQuery {
-                path: "image.bin".into(),
-                used_by: None
-            }
-        )
-        .is_err());
-        let preview = preview_file(
-            &state,
-            "writer",
-            &SkillFileQuery {
-                path: "SKILL.md".into(),
-                used_by: None,
-            },
-        )
-        .unwrap();
-        assert_eq!(preview.encoding, "text");
-        assert_eq!(preview.content, "# Writer");
-
-        let image = preview_file(
-            &state,
-            "writer",
-            &SkillFileQuery {
-                path: "assets/icon.png".into(),
-                used_by: None,
-            },
-        )
-        .unwrap();
-        assert_eq!(image.encoding, "base64");
-        assert_eq!(image.mime_type.as_deref(), Some("image/png"));
-        assert!(!image.content.is_empty());
     }
 
     #[tokio::test]

@@ -107,10 +107,7 @@ pub fn push_project_agents(agents: &mut Vec<SkillAgent>, workspace: &Path) {
     }
 }
 
-fn agents_for_mutation(
-    base: &[SkillAgent],
-    target: &MutationTarget,
-) -> Result<Vec<SkillAgent>> {
+fn agents_for_mutation(base: &[SkillAgent], target: &MutationTarget) -> Result<Vec<SkillAgent>> {
     let mut agents = base.to_vec();
     if mutation_scope_kind(target) == "project" {
         let workspace = validate_workspace_dir(
@@ -271,10 +268,7 @@ fn deploy_skill(source: &Path, destination: &Path) -> Result<()> {
     }
 
     copy_skill(&source, destination)?;
-    if let Err(error) = fs::write(
-        destination.join(MANAGED_MARKER),
-        b"managed by memorph\n",
-    ) {
+    if let Err(error) = fs::write(destination.join(MANAGED_MARKER), b"managed by memorph\n") {
         let _ = fs::remove_dir_all(destination);
         return Err(error).with_context(|| format!("Failed to mark {}", destination.display()));
     }
@@ -800,11 +794,8 @@ pub fn consolidate(
         // assignments onto the surviving skill so consolidation does
         // not silently drop a user's grouping.
         let inactive_ids =
-            repository::inactive_catalog_ids_for_name(conn, &normalized_name)
-                .unwrap_or_default();
-        if let Ok(Some(survivor)) =
-            repository::active_catalog_id_for_name(conn, &normalized_name)
-        {
+            repository::inactive_catalog_ids_for_name(conn, &normalized_name).unwrap_or_default();
+        if let Ok(Some(survivor)) = repository::active_catalog_id_for_name(conn, &normalized_name) {
             let _ = groups::migrate_members(conn, &inactive_ids, &survivor);
         }
         let _ = repository::delete_inactive_catalog_rows_for_name(conn, &normalized_name);
@@ -964,7 +955,8 @@ pub fn read_skill_file(
             STANDARD.encode(&bytes),
         )
     } else {
-        let text = String::from_utf8(bytes).map_err(|_| anyhow!("Skill asset is not UTF-8 text"))?;
+        let text =
+            String::from_utf8(bytes).map_err(|_| anyhow!("Skill asset is not UTF-8 text"))?;
         ("text".to_string(), None, text)
     };
 
@@ -1236,9 +1228,7 @@ mod tests {
 
         let real_dir = root.path().join("claude/skills/writer");
         let gemini_link = root.path().join("gemini/skills/writer");
-        let archive = root
-            .path()
-            .join("claude/skills/.disabled/writer");
+        let archive = root.path().join("claude/skills/.disabled/writer");
 
         // Disable: real dir moves into .disabled/, symlink removed, catalog row deleted.
         disable_skill(&agents, Some(&database_path), &skill_id).unwrap();
@@ -1357,8 +1347,8 @@ mod tests {
         assert_eq!(image.mime_type.as_deref(), Some("image/png"));
         assert!(!image.content.is_empty());
 
-        let updated = write_skill_file(&agents, None, &file("SKILL.md"), "# Writer Updated")
-            .unwrap();
+        let updated =
+            write_skill_file(&agents, None, &file("SKILL.md"), "# Writer Updated").unwrap();
         assert_eq!(updated.content, "# Writer Updated");
         assert_eq!(
             fs::read_to_string(skill.join("SKILL.md")).unwrap(),
