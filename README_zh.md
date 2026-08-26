@@ -88,9 +88,9 @@ npx memorph
 
 ### CLI
 
-CLI模式更多的是结合`SKILLS`之后利用agent帮你管理会话的迁移与管理
+CLI 可用于脚本、Agent 和人工操作。无参数运行直接打开 TUI；所有命令支持全局 `--json`。
 
-#### 查看当前工作区的可用会话-list
+#### 会话列表与过滤：list
 
 ```bash
 memorph list [OPTIONS]
@@ -98,143 +98,85 @@ memorph list [OPTIONS]
 
 | 参数 | 说明 |
 |------|------|
-| `--all` | 显示所有工作区的会话 |
-| `--claude` | 仅显示 Claude Code 会话 |
-| `--codex` | 仅显示 Codex 会话 |
-| `--opencode` | 仅显示 OpenCode 会话 |
+| `--all` | 显示所有工作区会话 |
+| `-p, --provider <PROVIDER>` | 限定 Provider，可重复 |
+| `--sort <recent/title>` | 排序方式 |
+| `--limit <N>` / `--offset <N>` | 分页 |
+| `-d, --dir <DIR>` | 匹配项目目录或源路径 |
+| `-s, --session <PATTERN>` | 匹配会话 ID 或标题 |
+| `--title <PATTERN>` | 匹配会话标题 |
+| `--text <PATTERN>` | 搜索消息正文 |
+| `--since <TIME>` / `--before <TIME>` | 时间过滤：日期、RFC3339、`7d`、`24h`、`30m` |
+| `--min-bytes <BYTES>` / `--max-bytes <BYTES>` | 大小过滤：字节、`K`、`M`、`G` |
+| `--providers` | 显示 Provider 能力矩阵 |
+| `--json` | 输出 JSON，可放在命令前或命令后 |
 
-##### 示例
 ```bash
-$ memorph list
+memorph list
+memorph list --all --title "登录" --since 7d
+memorph --json list --text "错误" | jq .
+memorph list --providers --provider codex
 ```
+
    ![列出会话](assets/zh/show-list.png)
 
-
-#### 将指定会话迁移-switch
+#### 会话迁移：switch
 
 ```bash
-memorph switch --<from>2<to> [OPTIONS]
+memorph switch <FROM> <TO> [OPTIONS]
+memorph migrate <FROM> <TO> [OPTIONS]  # switch 别名
 ```
 
 | 参数 | 说明 |
 |------|------|
-| `--claude2codex` | Claude → Codex |
-| `--codex2claude` | Codex → Claude |
-| `--claude2opencode` | Claude → OpenCode |
-| `--opencode2claude` | OpenCode → Claude |
-| `--codex2opencode` | Codex → OpenCode |
-| `--opencode2codex` | OpenCode → Codex |
-| `-s, --session-id <ID>` | 源会话 ID，**省略则取当前工作区最近会话** |
-| `-d, --to-dir <DIR>` | 目标目录，**默认：当前目录** |
+| `FROM` / `TO` | 源 Provider / 目标 Provider |
+| `-s, --session-id <ID>` | 源会话 ID；省略则使用当前工作区最近会话 |
+| `-t, --to-dir <DIR>` | 目标项目目录 |
 
-
-##### 示例
 ```bash
-$ memorph switch --claude2codex --session-id abc-123-session-id
+memorph switch claude codex --session-id abc-123-session-id
+memorph migrate claude codex --session-id abc-123-session-id
 ```
 
    ![迁移会话](assets/zh/show-list.png)
 
----
-
-#### CLI 表格
+#### CLI 命令
 
 | 命令 | 说明 |
 |------|------|
-| [`list`](#查看当前工作区的可用会话-list) | 列出会话（默认仅当前工作区） |
-| [`export`](#export) | 导出会话为 `.json` / `.md` / `.html` 文件 |
-| [`import`](#import) | 将 `.json` / `.md` / `.html` 文件或已有会话导入目标工具 |
-| [`remove`](#remove--rename--find) | 删除指定会话 |
-| [`rename`](#remove--rename--find) | 重命名指定会话 |
-| [`switch`](#将指定会话迁移-switch) | 跨 Provider 迁移会话 |
-| [`find`](#remove--rename--find) | 按目录、标题或 ID 搜索会话 |
-
-
----
+| `list` | 列出并过滤会话，或显示 Provider 能力 |
+| `switch` / `migrate` | 跨 Provider 迁移会话 |
+| `export` | 导出会话 |
+| `import` | 导入会话 |
+| `remove` | 删除会话 |
+| `rename` | 重命名会话 |
+| `web` / `api` / `tui` | 启动 Web、API 或 TUI |
+| `doctor` | 输出只读环境诊断 |
+| `update` | 按安装来源更新 memorph |
 
 #### 导入与导出
 
-##### 导出
-
 ```bash
-memorph export <PROVIDER> <SESSION_ID> [OPTIONS]
+memorph export <PROVIDER> <SESSION_ID> [-o PREFIX] [-f FORMAT]
+memorph import <PROVIDER> <FILE_OR_ID> [-t DIR]
 ```
 
-| 参数 | 说明 |
-|------|------|
-| `PROVIDER` | 目标 Agent：`claude` / `codex` / `opencode` |
-| `SESSION_ID` | 会话 ID |
-| `-o, --output <PREFIX>` | 输出文件名前缀，**默认：`SESSION_ID`** |
-| `-f, --format <FORMAT>` | `json` / `md` / `html`，**默认：`json`** |
-
 ```bash
-memorph export claude abc-123-session-id
 memorph export claude abc-123-session-id -f md
-```
-
-##### 导入
-
-```bash
-memorph import <PROVIDER> <FILE_OR_ID> [OPTIONS]
-```
-
-| 参数 | 说明 |
-|------|------|
-| `PROVIDER` | 目标 Agent：`claude` / `codex` / `opencode` |
-| `FILE_OR_ID` | `.json`/`.md`/`.html` 文件路径，或已有会话 ID |
-| `-d, --to-dir <DIR>` | 目标项目目录，**默认：当前目录** |
-
-```bash
-memorph import codex ./my-session.md
 memorph import claude ./backup.json --to-dir ~/projects/my-app
-memorph import claude xyz-456-session-id
 ```
-
----
 
 #### 删除与重命名
 
-| 命令 | 语法 | 说明 |
-|------|------|------|
-| `remove` | `memorph remove <PROVIDER> <SESSION_ID>` | 删除会话 |
-| `rename` | `memorph rename <PROVIDER> <SESSION_ID> <NEW_TITLE>` | 重命名会话 |
+```bash
+memorph remove <PROVIDER> <SESSION_ID>
+memorph rename <PROVIDER> <SESSION_ID> <NEW_TITLE>
+```
 
 ```bash
-# 删除
 memorph remove claude abc-123-session-id
-
-# 重命名
 memorph rename claude abc-123-session-id "修复登录 bug"
 ```
-
----
-
-#### 查询
-
-```bash
-memorph find [OPTIONS]
-```
-
-| 参数 | 说明 |
-|------|------|
-| `-d, --dir <DIR>` | 按项目目录路径模糊搜索 |
-| `-s, --session <PATTERN>` | 按会话 ID 或标题模糊匹配 |
-| `-p, --provider <PROVIDER>` | 限制 Provider（可多次使用） |
-
-**查询约束：** 至少需提供 `--dir`、`--session`、`--provider` 中的一个。
-
-```bash
-# 按目录搜索
-memorph find --dir ~/projects/my-app
-
-# 按标题或 ID 搜索
-memorph find --session "登录 bug"
-
-# 只在 Claude 和 Codex 中搜索
-memorph find --session "refactor" -p claude -p codex
-```
-
----
 
 ### Provider 支持矩阵
 

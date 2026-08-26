@@ -1,6 +1,8 @@
-use crate::provider::{Provider, ProviderCapabilities, ProviderContentFidelity, ProviderSessionSummary};
-use crate::session::Fidelity;
+use crate::provider::{
+    Provider, ProviderCapabilities, ProviderContentFidelity, ProviderSessionSummary,
+};
 use crate::providers::generic_json::{self, JsonProviderSpec};
+use crate::session::Fidelity;
 use crate::session::ImportedSession;
 use anyhow::Result;
 use std::path::PathBuf;

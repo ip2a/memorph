@@ -82,10 +82,7 @@ pub fn list_groups(conn: &Connection) -> Result<Vec<GroupWithMembers>> {
     })?;
     for row in member_rows {
         let (group_id, skill_id) = row?;
-        members_by_group
-            .entry(group_id)
-            .or_default()
-            .push(skill_id);
+        members_by_group.entry(group_id).or_default().push(skill_id);
     }
 
     Ok(groups
@@ -182,7 +179,8 @@ pub fn delete_group(conn: &mut Connection, id: &str) -> Result<()> {
     // ON DELETE CASCADE clears members; skills simply return to "ungrouped".
     tx.execute("DELETE FROM skill_groups WHERE id = ?1", params![id])
         .context("Failed to delete skill group")?;
-    tx.commit().context("Failed to commit skill group deletion")?;
+    tx.commit()
+        .context("Failed to commit skill group deletion")?;
     Ok(())
 }
 
@@ -333,8 +331,14 @@ mod tests {
             .iter()
             .find(|group| group.group.id == testing.id)
             .unwrap();
-        assert_eq!(frontend_members.member_skill_ids, vec!["skill:vue".to_string()]);
-        assert_eq!(testing_members.member_skill_ids, vec!["skill:react".to_string()]);
+        assert_eq!(
+            frontend_members.member_skill_ids,
+            vec!["skill:vue".to_string()]
+        );
+        assert_eq!(
+            testing_members.member_skill_ids,
+            vec!["skill:react".to_string()]
+        );
 
         // Ungroup clears the assignment.
         set_skill_group(store.connection_mut(), "skill:vue", None).unwrap();
@@ -380,9 +384,13 @@ mod tests {
     #[test]
     fn migrate_members_moves_assignment_onto_survivor() {
         let mut store = store();
-        let group =
-            create_group(store.connection_mut(), "G", None, None, 0).unwrap();
-        set_skill_group(store.connection_mut(), "skill:writer-codex", Some(&group.id)).unwrap();
+        let group = create_group(store.connection_mut(), "G", None, None, 0).unwrap();
+        set_skill_group(
+            store.connection_mut(),
+            "skill:writer-codex",
+            Some(&group.id),
+        )
+        .unwrap();
 
         // Consolidate merged `skill:writer-codex` into `skill:writer-claude`.
         let moved = migrate_members(
@@ -394,16 +402,28 @@ mod tests {
         assert_eq!(moved, 1);
 
         let groups = list_groups(store.connection()).unwrap();
-        assert_eq!(groups[0].member_skill_ids, vec!["skill:writer-claude".to_string()]);
+        assert_eq!(
+            groups[0].member_skill_ids,
+            vec!["skill:writer-claude".to_string()]
+        );
     }
 
     #[test]
     fn migrate_members_drops_when_survivor_already_assigned() {
         let mut store = store();
-        let group =
-            create_group(store.connection_mut(), "G", None, None, 0).unwrap();
-        set_skill_group(store.connection_mut(), "skill:writer-claude", Some(&group.id)).unwrap();
-        set_skill_group(store.connection_mut(), "skill:writer-codex", Some(&group.id)).unwrap();
+        let group = create_group(store.connection_mut(), "G", None, None, 0).unwrap();
+        set_skill_group(
+            store.connection_mut(),
+            "skill:writer-claude",
+            Some(&group.id),
+        )
+        .unwrap();
+        set_skill_group(
+            store.connection_mut(),
+            "skill:writer-codex",
+            Some(&group.id),
+        )
+        .unwrap();
 
         let moved = migrate_members(
             store.connection_mut(),
@@ -415,6 +435,9 @@ mod tests {
         // (not double-counted): one delete counts as moved.
         assert_eq!(moved, 1);
         let groups = list_groups(store.connection()).unwrap();
-        assert_eq!(groups[0].member_skill_ids, vec!["skill:writer-claude".to_string()]);
+        assert_eq!(
+            groups[0].member_skill_ids,
+            vec!["skill:writer-claude".to_string()]
+        );
     }
 }

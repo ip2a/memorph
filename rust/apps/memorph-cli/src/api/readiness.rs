@@ -105,10 +105,8 @@ pub(super) async fn get_readiness(Query(query): Query<ReadinessQuery>) -> impl I
         .values()
         .find(|operation| operation.workspace == workspace && operation.status.active())
         .map(|operation| operation.operation_id.clone());
-    let readiness = core_readiness::ReadinessCache::snapshot(
-        workspace.as_deref(),
-        active_operation_id,
-    );
+    let readiness =
+        core_readiness::ReadinessCache::snapshot(workspace.as_deref(), active_operation_id);
     ApiResponse::success(readiness).into_response()
 }
 
@@ -137,10 +135,7 @@ pub(super) async fn reconcile_readiness(
                 operation.current_phase = None;
                 operation.running_phases.clear();
                 operation.pending_phases.clear();
-                operation
-                    .readiness
-                    .active_operation_id
-                    .take();
+                operation.readiness.active_operation_id.take();
             }
         }
     }
@@ -157,8 +152,7 @@ pub(super) async fn reconcile_readiness(
 
     if plan.is_noop() {
         let operation_id = Uuid::new_v4().to_string();
-        let readiness =
-            core_readiness::ReadinessCache::snapshot(workspace.as_deref(), None);
+        let readiness = core_readiness::ReadinessCache::snapshot(workspace.as_deref(), None);
         let operation = ReadinessOperation {
             operation_id: operation_id.clone(),
             status: OperationStatus::Completed,
@@ -236,9 +230,7 @@ pub(super) async fn reconcile_readiness(
     ApiResponse::success(payload).into_response()
 }
 
-pub(super) async fn get_readiness_operation(
-    Path(operation_id): Path<String>,
-) -> impl IntoResponse {
+pub(super) async fn get_readiness_operation(Path(operation_id): Path<String>) -> impl IntoResponse {
     let state = coordinator()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -265,9 +257,7 @@ fn prune_completed_history(state: &mut Coordinator, protected_id: Option<&str>) 
     let mut terminal = state
         .operations
         .iter()
-        .filter(|(id, operation)| {
-            !operation.status.active() && protected_id != Some(id.as_str())
-        })
+        .filter(|(id, operation)| !operation.status.active() && protected_id != Some(id.as_str()))
         .map(|(id, _)| id.clone())
         .collect::<Vec<_>>();
     let terminal_count = terminal.len() + usize::from(protected_id.is_some());
@@ -395,11 +385,7 @@ fn run_worker(operation_id: &str) {
                 // Record into checkpoint cache, then refresh snapshot for this
                 // operation's readiness view.
                 let pr = core_readiness::assess_named_phase(&phase, workspace.as_deref());
-                let _ = core_readiness::ReadinessCache::record(
-                    &phase,
-                    workspace.as_deref(),
-                    &pr,
-                );
+                let _ = core_readiness::ReadinessCache::record(&phase, workspace.as_deref(), &pr);
                 operation.completed_phases.push(phase.clone());
             }
             Err(error) => {
@@ -488,7 +474,10 @@ fn finalize_operation(operation_id: &str) {
     // Non-foundation phase failures surface as Degraded in readiness.state but
     // the operation itself is Completed. Failed is only set on foundation
     // failure (early break in run_worker) or budget timeout (force_fail).
-    if !matches!(operation.status, OperationStatus::Superseded | OperationStatus::Failed) {
+    if !matches!(
+        operation.status,
+        OperationStatus::Superseded | OperationStatus::Failed
+    ) {
         operation.status = OperationStatus::Completed;
     }
     operation.current_phase = None;
@@ -619,9 +608,7 @@ mod tests {
         memorph::config::set_test_home_dir(home.path().to_path_buf());
         // Seed coordinator with a running operation that has an orphaned phase.
         {
-            let mut state = coordinator()
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
+            let mut state = coordinator().lock().unwrap_or_else(|p| p.into_inner());
             state.operations.clear();
             let mut readiness = core_readiness::ReadinessCache::snapshot(None, None);
             readiness.active_operation_id = Some("op-budget".into());
@@ -644,9 +631,7 @@ mod tests {
             );
         }
         force_fail("op-budget", "total budget exceeded");
-        let state = coordinator()
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let state = coordinator().lock().unwrap_or_else(|p| p.into_inner());
         let op = &state.operations["op-budget"];
         assert_eq!(op.status, OperationStatus::Failed);
         assert!(op.readiness.active_operation_id.is_none());
@@ -656,8 +641,7 @@ mod tests {
 
     #[test]
     fn reconcile_request_trigger_defaults_to_manual() {
-        let req: ReconcileRequest =
-            serde_json::from_str(r#"{"workspace": null}"#).unwrap();
+        let req: ReconcileRequest = serde_json::from_str(r#"{"workspace": null}"#).unwrap();
         assert_eq!(req.trigger, ReconcileTrigger::Manual);
     }
 }

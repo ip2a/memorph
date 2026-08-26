@@ -173,11 +173,7 @@ fn installation_used_by(agent_id: &str) -> &str {
     }
 }
 
-fn build_installation(
-    agent: &SkillAgent,
-    path: PathBuf,
-    fingerprint: String,
-) -> SkillInstallation {
+fn build_installation(agent: &SkillAgent, path: PathBuf, fingerprint: String) -> SkillInstallation {
     let is_link = path
         .symlink_metadata()
         .is_ok_and(|metadata| metadata.file_type().is_symlink());

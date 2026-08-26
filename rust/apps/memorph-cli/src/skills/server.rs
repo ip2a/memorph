@@ -187,27 +187,21 @@ fn router_with_state(
         .route("/api/v1/skills/enable", post(enable_skill))
         .route("/api/v1/skills/disabled", get(list_disabled_skills))
         .route("/api/v1/skills/consolidate", post(consolidate_skill))
-        .route("/api/v1/skills/remove-symlinks", post(remove_symlinks_skill))
         .route(
-            "/api/v1/skills/installation",
-            delete(delete_installation),
+            "/api/v1/skills/remove-symlinks",
+            post(remove_symlinks_skill),
         )
+        .route("/api/v1/skills/installation", delete(delete_installation))
         .route(
             "/api/v1/skills/{source_id}/group-installations",
             get(get_group_installations),
         )
-        .route(
-            "/api/v1/skills/groups",
-            get(list_groups).post(create_group),
-        )
+        .route("/api/v1/skills/groups", get(list_groups).post(create_group))
         .route(
             "/api/v1/skills/groups/{group_id}",
             patch(update_group).delete(delete_group),
         )
-        .route(
-            "/api/v1/skills/{skill_id}/group",
-            put(set_skill_group),
-        )
+        .route("/api/v1/skills/{skill_id}/group", put(set_skill_group))
         .with_state(SkillsState {
             agents: Arc::new(agents),
             database_path: database_path.map(Arc::new),
@@ -242,7 +236,10 @@ fn validate_workspace_dir(workspace: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn push_project_agents(agents: &mut Vec<memorph::skills::inspection::SkillAgent>, workspace: &Path) {
+fn push_project_agents(
+    agents: &mut Vec<memorph::skills::inspection::SkillAgent>,
+    workspace: &Path,
+) {
     for (agent_id, name, _, relative) in discovery::SKILL_AGENTS {
         if agent_id == "agents-shared" {
             continue;
@@ -1696,7 +1693,10 @@ fn archive_skill(
         .iter()
         .find(|installation| {
             installation.status == "active"
-                && matches!(installation.install_kind.as_str(), "directory" | "managed-copy")
+                && matches!(
+                    installation.install_kind.as_str(),
+                    "directory" | "managed-copy"
+                )
         })
         .ok_or_else(|| anyhow!("Cannot disable: no managed source directory to archive"))?;
     let real_path = std::path::Path::new(&real.install_path);
@@ -1765,15 +1765,9 @@ async fn enable_skill(
             .find(|agent| agent.agent_id == agent_id_for_used_by(&request.used_by))
             .ok_or_else(|| anyhow!("Unknown agent: {}", request.used_by))?;
         validate_directory(&request.directory)?;
-        let archive_path = agent
-            .skills_dir
-            .join(".disabled")
-            .join(&request.directory);
+        let archive_path = agent.skills_dir.join(".disabled").join(&request.directory);
         if !archive_path.join("SKILL.md").is_file() {
-            return Err(anyhow!(
-                "No archived skill at {}",
-                archive_path.display()
-            ));
+            return Err(anyhow!("No archived skill at {}", archive_path.display()));
         }
         let target = agent.skills_dir.join(&request.directory);
         if target.exists() {
@@ -1838,8 +1832,7 @@ async fn list_disabled_skills(State(state): State<SkillsState>) -> impl IntoResp
             let Some(directory) = path.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
-            let frontmatter =
-                memorph::skills::inspection::read_frontmatter(&path.join("SKILL.md"));
+            let frontmatter = memorph::skills::inspection::read_frontmatter(&path.join("SKILL.md"));
             let name = frontmatter
                 .get("name")
                 .cloned()
@@ -1862,7 +1855,11 @@ async fn list_disabled_skills(State(state): State<SkillsState>) -> impl IntoResp
             });
         }
     }
-    items.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.directory.cmp(&b.directory)));
+    items.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.directory.cmp(&b.directory))
+    });
     ApiResponse::success(DisabledSkillsPage { items }).into_response()
 }
 
@@ -2093,7 +2090,8 @@ async fn delete_group(
     State(state): State<SkillsState>,
     AxumPath(group_id): AxumPath<String>,
 ) -> impl IntoResponse {
-    match stats_store(&state).and_then(|mut store| groups::delete_group(store.connection_mut(), &group_id))
+    match stats_store(&state)
+        .and_then(|mut store| groups::delete_group(store.connection_mut(), &group_id))
     {
         Ok(_) => ApiResponse::success(()).into_response(),
         Err(error) => error_response(error),
@@ -2108,7 +2106,11 @@ async fn set_skill_group(
     Json(request): Json<SetSkillGroupRequest>,
 ) -> impl IntoResponse {
     match stats_store(&state).and_then(|mut store| {
-        groups::set_skill_group(store.connection_mut(), &skill_id, request.group_id.as_deref())
+        groups::set_skill_group(
+            store.connection_mut(),
+            &skill_id,
+            request.group_id.as_deref(),
+        )
     }) {
         Ok(_) => ApiResponse::success(()).into_response(),
         Err(error) => error_response(error),
@@ -2858,7 +2860,10 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         let listed = wait_for_skills(app.clone(), 2000).await;
-        let catalog_id = listed["data"]["items"][0]["id"].as_str().unwrap().to_string();
+        let catalog_id = listed["data"]["items"][0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         let (status, _) = json(
             app.clone(),
@@ -2923,8 +2928,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
-            listed["data"]["total"],
-            0,
+            listed["data"]["total"], 0,
             "disabled skill must disappear from the catalog"
         );
 
@@ -2959,7 +2963,10 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "enable failed: {body:?}");
-        assert!(real_dir.join("SKILL.md").is_file(), "skill restored in place");
+        assert!(
+            real_dir.join("SKILL.md").is_file(),
+            "skill restored in place"
+        );
         assert!(!archive.exists(), "archive folder emptied");
 
         let listed = wait_for_skills(app.clone(), 2000).await;
@@ -3051,8 +3058,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         let listed = wait_for_skills(app.clone(), 2000).await;
         assert_eq!(
-            listed["data"]["total"],
-            2,
+            listed["data"]["total"], 2,
             "two independent copies surface as two catalog rows"
         );
 
@@ -3080,12 +3086,14 @@ mod tests {
             fs::read_link(&codex_path).unwrap(),
             claude_path.canonicalize().unwrap()
         );
-        assert!(claude_path.join("SKILL.md").is_file(), "canonical copy kept");
+        assert!(
+            claude_path.join("SKILL.md").is_file(),
+            "canonical copy kept"
+        );
 
         let listed = wait_for_skills(app.clone(), 2000).await;
         assert_eq!(
-            listed["data"]["total"],
-            1,
+            listed["data"]["total"], 1,
             "symlinked copies merge into one catalog row"
         );
     }
@@ -3136,11 +3144,9 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         let project_link = workspace.join(".codex/skills/writer");
-        assert!(
-            project_link
-                .symlink_metadata()
-                .is_ok_and(|metadata| metadata.file_type().is_symlink())
-        );
+        assert!(project_link
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.file_type().is_symlink()));
 
         let global_request = SkillMutation {
             skill_id: "writer".into(),
@@ -3161,11 +3167,9 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         let global_link = root.path().join("codex").join("skills").join("writer");
-        assert!(
-            global_link
-                .symlink_metadata()
-                .is_ok_and(|metadata| metadata.file_type().is_symlink())
-        );
+        assert!(global_link
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.file_type().is_symlink()));
 
         let (status, _) = json(
             app.clone(),
@@ -3179,11 +3183,9 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert!(project_link.symlink_metadata().is_err());
-        assert!(
-            global_link
-                .symlink_metadata()
-                .is_ok_and(|metadata| metadata.file_type().is_symlink())
-        );
+        assert!(global_link
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.file_type().is_symlink()));
 
         let (status, _) = json(
             app,
@@ -3222,7 +3224,10 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         let listed = wait_for_skills(app.clone(), 2000).await;
-        let catalog_id = listed["data"]["items"][0]["id"].as_str().unwrap().to_string();
+        let catalog_id = listed["data"]["items"][0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         // Deploy a symlink to gemini, then strip symlinks.
         let (status, _) = json(
@@ -3361,7 +3366,9 @@ mod tests {
                 .method("PUT")
                 .uri("/api/v1/skills/skill:react/group")
                 .header("content-type", "application/json")
-                .body(Body::from(serde_json::json!({"group_id": null}).to_string()))
+                .body(Body::from(
+                    serde_json::json!({"group_id": null}).to_string(),
+                ))
                 .unwrap(),
         )
         .await;

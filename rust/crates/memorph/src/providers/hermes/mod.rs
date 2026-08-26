@@ -320,7 +320,7 @@ fn scan_sessions_from_db(db: &Path) -> Result<Vec<ProviderSessionSummary>> {
             row.get::<_, Option<String>>(1)?,
             row.get::<_, Option<String>>(2)?,
             row.get::<_, f64>(3)?,
-        row.get::<_, i64>(4)?,
+            row.get::<_, i64>(4)?,
         ))
     })?;
     rows.map(|row| {

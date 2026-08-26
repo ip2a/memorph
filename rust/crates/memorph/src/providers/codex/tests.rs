@@ -3074,11 +3074,13 @@ fn codex_export_then_import_round_trips_tool_call_and_result() {
     // ToolResult survives.
     assert!(
         imported.session.events.iter().any(|e| {
-            e.blocks.iter().any(|b| matches!(
-                b,
-                Block::ToolResult { tool_call_id, content, .. }
-                    if tool_call_id == "call-rt1" && content == "Cargo.toml"
-            ))
+            e.blocks.iter().any(|b| {
+                matches!(
+                    b,
+                    Block::ToolResult { tool_call_id, content, .. }
+                        if tool_call_id == "call-rt1" && content == "Cargo.toml"
+                )
+            })
         }),
         "ToolResult did not round-trip"
     );

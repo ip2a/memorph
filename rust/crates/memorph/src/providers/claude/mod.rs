@@ -2635,148 +2635,168 @@ mod tests {
     }
 }
 
-    #[test]
-    fn claude_export_then_import_round_trips_tool_call_and_result() {
-        let dir = tempfile::tempdir().unwrap();
-        crate::config::set_test_home_dir(dir.path().to_path_buf());
+#[test]
+fn claude_export_then_import_round_trips_tool_call_and_result() {
+    let dir = tempfile::tempdir().unwrap();
+    crate::config::set_test_home_dir(dir.path().to_path_buf());
 
-        let now = Utc::now();
-        let workspace = dir.path().join("project");
-        std::fs::create_dir_all(&workspace).unwrap();
+    let now = Utc::now();
+    let workspace = dir.path().join("project");
+    std::fs::create_dir_all(&workspace).unwrap();
 
-        let session = Session {
-            lineage: Vec::new(),
-            schema: Schema::default(),
-            identity: Identity {
-                id: "round-trip-source".to_string(),
-                title: Some("Round Trip Test".to_string()),
-            },
-            context: Context {
-                workspace: Some(workspace.to_string_lossy().to_string()),
-                created_at: Some(now),
-                last_active_at: Some(now),
+    let session = Session {
+        lineage: Vec::new(),
+        schema: Schema::default(),
+        identity: Identity {
+            id: "round-trip-source".to_string(),
+            title: Some("Round Trip Test".to_string()),
+        },
+        context: Context {
+            workspace: Some(workspace.to_string_lossy().to_string()),
+            created_at: Some(now),
+            last_active_at: Some(now),
+            tags: Vec::new(),
+        },
+        events: vec![
+            Event {
+                id: "evt-user".to_string(),
+                kind: EventKind::Message,
+                role: Role::User,
+                timestamp: now,
+                links: Links::default(),
+                blocks: vec![Block::Text {
+                    text: "Run the tests".to_string(),
+                }],
                 tags: Vec::new(),
+                extensions: Default::default(),
+                metadata: Metadata {
+                    model: None,
+                    usage: None,
+                },
             },
-            events: vec![
-                Event {
-                    id: "evt-user".to_string(),
-                    kind: EventKind::Message,
-                    role: Role::User,
-                    timestamp: now,
-                    links: Links::default(),
-                    blocks: vec![Block::Text {
-                        text: "Run the tests".to_string(),
-                    }],
-                    tags: Vec::new(),
-                    extensions: Default::default(),
-                    metadata: Metadata { model: None, usage: None },
-                },
-                Event {
-                    id: "evt-assistant".to_string(),
-                    kind: EventKind::Action,
-                    role: Role::Assistant,
-                    timestamp: now,
-                    links: Links::default(),
-                    blocks: vec![
-                        Block::Text {
-                            text: "I'll run them now".to_string(),
-                        },
-                        Block::ToolCall {
-                            tool_call_id: "toolu_rt1".to_string(),
-                            name: "exec_command".to_string(),
-                            input: Some(serde_json::json!({"cmd": "cargo test"})),
-                        },
-                    ],
-                    tags: Vec::new(),
-                    extensions: Default::default(),
-                    metadata: Metadata { model: None, usage: None },
-                },
-                Event {
-                    id: "evt-tool-result".to_string(),
-                    kind: EventKind::Observation,
-                    role: Role::User,
-                    timestamp: now,
-                    links: Links::default(),
-                    blocks: vec![Block::ToolResult {
+            Event {
+                id: "evt-assistant".to_string(),
+                kind: EventKind::Action,
+                role: Role::Assistant,
+                timestamp: now,
+                links: Links::default(),
+                blocks: vec![
+                    Block::Text {
+                        text: "I'll run them now".to_string(),
+                    },
+                    Block::ToolCall {
                         tool_call_id: "toolu_rt1".to_string(),
-                        content: "test result: ok. 3 passed".to_string(),
-                        outcome: crate::session::execution_outcome(false),
-                    }],
-                    tags: Vec::new(),
-                    extensions: Default::default(),
-                    metadata: Metadata { model: None, usage: None },
+                        name: "exec_command".to_string(),
+                        input: Some(serde_json::json!({"cmd": "cargo test"})),
+                    },
+                ],
+                tags: Vec::new(),
+                extensions: Default::default(),
+                metadata: Metadata {
+                    model: None,
+                    usage: None,
                 },
-            ],
-            extensions: Default::default(),
-        };
+            },
+            Event {
+                id: "evt-tool-result".to_string(),
+                kind: EventKind::Observation,
+                role: Role::User,
+                timestamp: now,
+                links: Links::default(),
+                blocks: vec![Block::ToolResult {
+                    tool_call_id: "toolu_rt1".to_string(),
+                    content: "test result: ok. 3 passed".to_string(),
+                    outcome: crate::session::execution_outcome(false),
+                }],
+                tags: Vec::new(),
+                extensions: Default::default(),
+                metadata: Metadata {
+                    model: None,
+                    usage: None,
+                },
+            },
+        ],
+        extensions: Default::default(),
+    };
 
-        let exported = ClaudeProvider
-            .export_session(&session, &workspace)
-            .unwrap();
+    let exported = ClaudeProvider.export_session(&session, &workspace).unwrap();
 
-        // Find the exported JSONL file.
-        let encoded = encode_project_dir(&workspace.to_string_lossy());
-        let jsonl_path = dir
-            .path()
-            .join(".claude/projects")
-            .join(&encoded)
-            .join(format!("{}.jsonl", exported.session_id));
-        assert!(jsonl_path.is_file(), "exported JSONL not found: {}", jsonl_path.display());
+    // Find the exported JSONL file.
+    let encoded = encode_project_dir(&workspace.to_string_lossy());
+    let jsonl_path = dir
+        .path()
+        .join(".claude/projects")
+        .join(&encoded)
+        .join(format!("{}.jsonl", exported.session_id));
+    assert!(
+        jsonl_path.is_file(),
+        "exported JSONL not found: {}",
+        jsonl_path.display()
+    );
 
-        // Re-import the exported file.
-        let reimported = import_canonical_session(&jsonl_path).unwrap();
+    // Re-import the exported file.
+    let reimported = import_canonical_session(&jsonl_path).unwrap();
 
-        // User text round-trips.
-        let user_evt = reimported
-            .session
-            .events
-            .iter()
-            .find(|e| e.role == Role::User && e.blocks.iter().any(|b| matches!(b, Block::Text { text } if text == "Run the tests")))
-            .expect("user text event survived round-trip");
+    // User text round-trips.
+    let user_evt = reimported
+        .session
+        .events
+        .iter()
+        .find(|e| {
+            e.role == Role::User
+                && e.blocks
+                    .iter()
+                    .any(|b| matches!(b, Block::Text { text } if text == "Run the tests"))
+        })
+        .expect("user text event survived round-trip");
 
-        // Assistant ToolCall round-trips.
-        let assistant_evt = reimported
-            .session
-            .events
-            .iter()
-            .find(|e| e.role == Role::Assistant)
-            .expect("assistant event survived round-trip");
-        assert!(
-            assistant_evt.blocks.iter().any(|b| matches!(
-                b,
-                Block::ToolCall { tool_call_id, name, .. }
-                    if tool_call_id == "toolu_rt1" && name == "exec_command"
-            )),
-            "ToolCall did not round-trip; blocks = {:?}",
-            assistant_evt.blocks
-        );
-        assert!(
-            assistant_evt.blocks.iter().any(|b| matches!(
-                b,
-                Block::Text { text } if text == "I'll run them now"
-            )),
-            "assistant text did not round-trip"
-        );
+    // Assistant ToolCall round-trips.
+    let assistant_evt = reimported
+        .session
+        .events
+        .iter()
+        .find(|e| e.role == Role::Assistant)
+        .expect("assistant event survived round-trip");
+    assert!(
+        assistant_evt.blocks.iter().any(|b| matches!(
+            b,
+            Block::ToolCall { tool_call_id, name, .. }
+                if tool_call_id == "toolu_rt1" && name == "exec_command"
+        )),
+        "ToolCall did not round-trip; blocks = {:?}",
+        assistant_evt.blocks
+    );
+    assert!(
+        assistant_evt.blocks.iter().any(|b| matches!(
+            b,
+            Block::Text { text } if text == "I'll run them now"
+        )),
+        "assistant text did not round-trip"
+    );
 
-        // ToolResult round-trips.
-        let tool_result_evt = reimported
-            .session
-            .events
-            .iter()
-            .find(|e| e.blocks.iter().any(|b| matches!(b, Block::ToolResult { .. })))
-            .expect("tool result event survived round-trip");
-        assert!(
-            tool_result_evt.blocks.iter().any(|b| matches!(
-                b,
-                Block::ToolResult { tool_call_id, content, outcome }
-                    if tool_call_id == "toolu_rt1"
-                        && content == "test result: ok. 3 passed"
-                        && *outcome == crate::session::ExecutionOutcome::Succeeded
-            )),
-            "ToolResult did not round-trip; blocks = {:?}",
-            tool_result_evt.blocks
-        );
+    // ToolResult round-trips.
+    let tool_result_evt = reimported
+        .session
+        .events
+        .iter()
+        .find(|e| {
+            e.blocks
+                .iter()
+                .any(|b| matches!(b, Block::ToolResult { .. }))
+        })
+        .expect("tool result event survived round-trip");
+    assert!(
+        tool_result_evt.blocks.iter().any(|b| matches!(
+            b,
+            Block::ToolResult { tool_call_id, content, outcome }
+                if tool_call_id == "toolu_rt1"
+                    && content == "test result: ok. 3 passed"
+                    && *outcome == crate::session::ExecutionOutcome::Succeeded
+        )),
+        "ToolResult did not round-trip; blocks = {:?}",
+        tool_result_evt.blocks
+    );
 
-        // Silence unused warning from user_evt lookup.
-        let _ = user_evt;
-    }
+    // Silence unused warning from user_evt lookup.
+    let _ = user_evt;
+}

@@ -391,7 +391,7 @@ fn read_headers(conn: &Connection) -> Result<BTreeMap<String, CursorComposerHead
             row.get::<_, Option<i64>>(2)?,
             row.get::<_, Option<i64>>(3)?,
             row.get::<_, SqliteValue>(4)?,
-        row.get::<_, Option<i64>>(5)?,
+            row.get::<_, Option<i64>>(5)?,
         ))
     })?;
     let mut headers = BTreeMap::new();
@@ -410,8 +410,8 @@ fn read_headers(conn: &Connection) -> Result<BTreeMap<String, CursorComposerHead
         headers.insert(
             composer_id.clone(),
             CursorComposerHeader {
-is_archived,
-created_at,
+                is_archived,
+                created_at,
                 last_updated_at,
                 recency,
                 value: raw,

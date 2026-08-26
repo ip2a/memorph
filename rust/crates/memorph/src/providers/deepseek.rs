@@ -1,7 +1,7 @@
 use crate::provider::{
-    event_role_label, event_visible_message_role, event_visible_text, export_result,
-    session_title, PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport,
-    ProviderCapabilities, ProviderContentFidelity, ProviderSessionBackup, ProviderSessionSummary,
+    event_role_label, event_visible_message_role, event_visible_text, export_result, session_title,
+    PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
+    ProviderContentFidelity, ProviderSessionBackup, ProviderSessionSummary,
     ProviderSourceFingerprint, ProviderSourceMutation, ProviderWriteRisk, ResumeQuality,
     ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
 };
@@ -122,7 +122,7 @@ impl Provider for DeepseekProvider {
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, i64>(4)?,
                 row.get::<_, i64>(5)?,
-            row.get::<_, i64>(6)?,
+                row.get::<_, i64>(6)?,
             ))
         })?;
 
@@ -169,7 +169,7 @@ impl Provider for DeepseekProvider {
                         row.get::<_, String>(2)?,
                         row.get::<_, Option<String>>(3)?,
                         row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
+                        row.get::<_, i64>(5)?,
                     ))
                 },
             )
@@ -611,9 +611,10 @@ fn deepseek_message_content(event: &Event) -> Option<String> {
     // column should only hold the event's Text/Thinking blocks — not the full
     // visible text blob that includes stringified tool representations. This
     // prevents the reimport parser from embedding tool text into a Text block.
-    let has_tool = event.blocks.iter().any(|b| {
-        matches!(b, Block::ToolCall { .. } | Block::ToolResult { .. })
-    });
+    let has_tool = event
+        .blocks
+        .iter()
+        .any(|b| matches!(b, Block::ToolCall { .. } | Block::ToolResult { .. }));
     let text = if has_tool {
         event
             .blocks
@@ -2373,8 +2374,7 @@ mod tests {
         let call_row = MessageRow {
             id: 10,
             role: "assistant".to_string(),
-            content: "[Tool use: read_file (call-42)]\n{\"path\":\"src/lib.rs\"}"
-                .to_string(),
+            content: "[Tool use: read_file (call-42)]\n{\"path\":\"src/lib.rs\"}".to_string(),
             item_json: Some(serde_json::to_string(&item_json_value).unwrap()),
             created_at: 1710000002,
         };
@@ -2464,7 +2464,6 @@ mod tests {
         assert_eq!(text_item["source"], "memorph-canonical");
     }
 
-
     #[test]
     fn deepseek_export_content_excludes_tool_text_from_multi_block_events() {
         // An assistant event with [Text, ToolCall] should export content as
@@ -2488,7 +2487,10 @@ mod tests {
             ],
             tags: Vec::new(),
             extensions: Default::default(),
-            metadata: Metadata { model: None, usage: None },
+            metadata: Metadata {
+                model: None,
+                usage: None,
+            },
         };
 
         let content = deepseek_message_content(&event).expect("content for multi-block event");
@@ -2497,5 +2499,4 @@ mod tests {
         assert!(!content.contains("[Tool use:"));
         assert!(!content.contains("read_file"));
     }
-
 }

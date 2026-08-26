@@ -658,7 +658,7 @@ pub(super) fn scan_sessions_from_db() -> Result<Vec<ProviderSessionSummary>> {
         let title: String = row.get(3)?;
         let created: i64 = row.get(4)?;
         let updated: i64 = row.get(5)?;
-            let archived = row.get::<_, Option<i64>>(6)?.is_some();
+        let archived = row.get::<_, Option<i64>>(6)?.is_some();
         Ok(ProviderSessionSummary {
             archived,
             session_id: session_id.clone(),
@@ -1248,13 +1248,13 @@ pub(super) fn parse_session_file(path: &Path) -> Option<ProviderSessionSummary> 
         .and_then(|v| v.as_i64());
     let updated = json
         .get("time")
-            .and_then(|v| v.get("updated"))
-            .and_then(|v| v.as_i64());
-let archived = json
-            .get("time")
-            .and_then(|v| v.get("archived"))
-            .and_then(|v| v.as_i64())
-            .is_some();
+        .and_then(|v| v.get("updated"))
+        .and_then(|v| v.as_i64());
+    let archived = json
+        .get("time")
+        .and_then(|v| v.get("archived"))
+        .and_then(|v| v.as_i64())
+        .is_some();
 
     Some(ProviderSessionSummary {
         archived,

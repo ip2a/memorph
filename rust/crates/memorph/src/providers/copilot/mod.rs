@@ -620,10 +620,7 @@ fn vscode_state_to_events(state: &Value, report: &mut MappingReport) -> Vec<Even
                 path: Some(format!("requests[{idx}].response")),
                 raw: None,
             });
-            let kind = if blocks
-                .iter()
-                .any(|b| matches!(b, Block::ToolCall { .. }))
-            {
+            let kind = if blocks.iter().any(|b| matches!(b, Block::ToolCall { .. })) {
                 EventKind::Action
             } else {
                 EventKind::Message

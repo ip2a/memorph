@@ -72,151 +72,95 @@ Click migrate and verify it loads successfully in the target tool.
 
 ### CLI
 
-#### View Available Sessions in Current Workspace — list
+Use CLI for scripts, agents, and manual operations. Running without a command opens the TUI. Every command supports global `--json`.
+
+#### List and filter sessions: list
 
 ```bash
 memorph list [OPTIONS]
 ```
 
-| Parameter | Description |
+| Option | Description |
 |------|------|
 | `--all` | Show sessions from all workspaces |
-| `--claude` | Show only Claude Code sessions |
-| `--codex` | Show only Codex sessions |
-| `--opencode` | Show only OpenCode sessions |
+| `-p, --provider <PROVIDER>` | Restrict provider; repeatable |
+| `--sort <recent/title>` | Sort order |
+| `--limit <N>` / `--offset <N>` | Pagination |
+| `-d, --dir <DIR>` | Match project directory or source path |
+| `-s, --session <PATTERN>` | Match session ID or title |
+| `--title <PATTERN>` | Match session title |
+| `--text <PATTERN>` | Search message body text |
+| `--since <TIME>` / `--before <TIME>` | Time filter: date, RFC3339, `7d`, `24h`, `30m` |
+| `--min-bytes <BYTES>` / `--max-bytes <BYTES>` | Size filter: bytes, `K`, `M`, `G` |
+| `--providers` | Show provider capabilities |
+| `--json` | Output JSON; may appear before or after the command |
 
-##### Example
 ```bash
-$ memorph list
+memorph list
+memorph list --all --title "login" --since 7d
+memorph --json list --text "error" | jq .
+memorph list --providers --provider codex
 ```
+
    ![List Sessions](assets/en/show-list.png)
 
-
-#### Migrate a Specific Session — switch
+#### Switch sessions: switch
 
 ```bash
-memorph switch --<from>2<to> [OPTIONS]
+memorph switch <FROM> <TO> [OPTIONS]
+memorph migrate <FROM> <TO> [OPTIONS]  # alias for switch
 ```
 
-| Parameter | Description |
+| Option | Description |
 |------|------|
-| `--claude2codex` | Claude → Codex |
-| `--codex2claude` | Codex → Claude |
-| `--claude2opencode` | Claude → OpenCode |
-| `--opencode2claude` | OpenCode → Claude |
-| `--codex2opencode` | Codex → OpenCode |
-| `--opencode2codex` | OpenCode → Codex |
-| `-s, --session-id <ID>` | Source session ID; **omitting this uses the most recent session in the current workspace** |
-| `-d, --to-dir <DIR>` | Target directory; **default: current directory** |
+| `FROM` / `TO` | Source provider / target provider |
+| `-s, --session-id <ID>` | Source session ID; omitted uses the latest session in the current workspace |
+| `-t, --to-dir <DIR>` | Target project directory |
 
-
-##### Example
 ```bash
-$ memorph switch --claude2codex --session-id abc-123-session-id
+memorph switch claude codex --session-id abc-123-session-id
+memorph migrate claude codex --session-id abc-123-session-id
 ```
 
    ![Migrate Session](assets/en/show-list.png)
 
----
-
-#### CLI Commands
+#### CLI commands
 
 | Command | Description |
 |------|------|
-| [`list`](#view-available-sessions-in-current-workspace--list) | List sessions (current workspace only by default) |
-| [`export`](#export) | Export session as `.json` / `.md` / `.html` file |
-| [`import`](#import) | Import `.json` / `.md` / `.html` file or existing session into target tool |
-| [`remove`](#remove--rename--find) | Remove a specific session |
-| [`rename`](#remove--rename--find) | Rename a specific session |
-| [`switch`](#migrate-a-specific-session--switch) | Migrate session across providers |
-| [`find`](#remove--rename--find) | Search sessions by directory, title, or ID |
+| `list` | List and filter sessions, or show provider capabilities |
+| `switch` / `migrate` | Migrate a session across providers |
+| `export` | Export a session |
+| `import` | Import a session |
+| `remove` | Remove a session |
+| `rename` | Rename a session |
+| `web` / `api` / `tui` | Start Web, API, or TUI |
+| `doctor` | Run read-only environment diagnostics |
+| `update` | Update memorph using detected install source |
 
-
----
-
-#### Import and Export
-
-##### Export
+#### Import and export
 
 ```bash
-memorph export <PROVIDER> <SESSION_ID> [OPTIONS]
+memorph export <PROVIDER> <SESSION_ID> [-o PREFIX] [-f FORMAT]
+memorph import <PROVIDER> <FILE_OR_ID> [-t DIR]
 ```
 
-| Parameter | Description |
-|------|------|
-| `PROVIDER` | Target agent: `claude` / `codex` / `opencode` |
-| `SESSION_ID` | Session ID |
-| `-o, --output <PREFIX>` | Output filename prefix; **default: `SESSION_ID`** |
-| `-f, --format <FORMAT>` | `json` / `md` / `html`; **default: `json`** |
-
 ```bash
-memorph export claude abc-123-session-id
 memorph export claude abc-123-session-id -f md
-```
-
-##### Import
-
-```bash
-memorph import <PROVIDER> <FILE_OR_ID> [OPTIONS]
-```
-
-| Parameter | Description |
-|------|------|
-| `PROVIDER` | Target agent: `claude` / `codex` / `opencode` |
-| `FILE_OR_ID` | Path to `.json`/`.md`/`.html` file, or an existing session ID |
-| `-d, --to-dir <DIR>` | Target project directory; **default: current directory** |
-
-```bash
-memorph import codex ./my-session.md
 memorph import claude ./backup.json --to-dir ~/projects/my-app
-memorph import claude xyz-456-session-id
 ```
 
----
-
-#### Remove and Rename
-
-| Command | Syntax | Description |
-|------|------|------|
-| `remove` | `memorph remove <PROVIDER> <SESSION_ID>` | Remove a session |
-| `rename` | `memorph rename <PROVIDER> <SESSION_ID> <NEW_TITLE>` | Rename a session |
+#### Remove and rename
 
 ```bash
-# Remove
-memorph remove claude abc-123-session-id
+memorph remove <PROVIDER> <SESSION_ID>
+memorph rename <PROVIDER> <SESSION_ID> <NEW_TITLE>
+```
 
-# Rename
+```bash
+memorph remove claude abc-123-session-id
 memorph rename claude abc-123-session-id "Fix login bug"
 ```
-
----
-
-#### Search
-
-```bash
-memorph find [OPTIONS]
-```
-
-| Parameter | Description |
-|------|------|
-| `-d, --dir <DIR>` | Fuzzy search by project directory path |
-| `-s, --session <PATTERN>` | Fuzzy match by session ID or title |
-| `-p, --provider <PROVIDER>` | Restrict provider (can be used multiple times) |
-
-**Search constraint:** At least one of `--dir`, `--session`, or `--provider` must be provided.
-
-```bash
-# Search by directory
-memorph find --dir ~/projects/my-app
-
-# Search by title or ID
-memorph find --session "login bug"
-
-# Search only in Claude and Codex
-memorph find --session "refactor" -p claude -p codex
-```
-
----
 
 ### Provider Support Matrix
 

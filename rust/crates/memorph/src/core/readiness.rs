@@ -788,11 +788,7 @@ impl ReadinessCache {
         let workspace_canonical = match validated {
             Ok(ws) => ws,
             Err(error) => {
-                return error_readiness(
-                    workspace.map(str::to_string),
-                    active_operation_id,
-                    error,
-                );
+                return error_readiness(workspace.map(str::to_string), active_operation_id, error);
             }
         };
 
@@ -949,17 +945,16 @@ impl ReadinessCache {
             Ok(s) => s,
             Err(_) => return HashMap::new(),
         };
-        let rows = stmt
-            .query_map(rusqlite::params![ws], |row| {
-                Ok(CheckpointRow {
-                    phase: row.get(0)?,
-                    workspace_key: row.get(1)?,
-                    state: row.get(2)?,
-                    message: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                    signature: row.get(4)?,
-                    reconciled_at_ms: row.get(5)?,
-                })
-            });
+        let rows = stmt.query_map(rusqlite::params![ws], |row| {
+            Ok(CheckpointRow {
+                phase: row.get(0)?,
+                workspace_key: row.get(1)?,
+                state: row.get(2)?,
+                message: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                signature: row.get(4)?,
+                reconciled_at_ms: row.get(5)?,
+            })
+        });
         let mut out = HashMap::new();
         if let Ok(rows) = rows {
             for row in rows.flatten() {
@@ -1116,7 +1111,11 @@ pub fn decide_reconcile(trigger: ReconcileTrigger, workspace: Option<&str>) -> R
     let conn = local_store::open_database();
     let rows = match conn {
         Ok(c) => ReadinessCache::read_all_rows(&c, workspace),
-        Err(_) => return ReconcilePlan::Full { phases: all_real_phases_for(&workspace_key) },
+        Err(_) => {
+            return ReconcilePlan::Full {
+                phases: all_real_phases_for(&workspace_key),
+            }
+        }
     };
     let stored = ReadinessCache::stored_signatures_from_rows(&rows);
     let live = live_signatures(&workspace_key);
@@ -1131,9 +1130,7 @@ pub fn decide_reconcile(trigger: ReconcileTrigger, workspace: Option<&str>) -> R
             }
         }
         ReconcileTrigger::Manual | ReconcileTrigger::Retry => {
-            let any_missing = REAL_PHASES
-                .iter()
-                .any(|phase| !stored.contains_key(*phase));
+            let any_missing = REAL_PHASES.iter().any(|phase| !stored.contains_key(*phase));
             let any_error = stored
                 .values()
                 .any(|(_, state)| *state == PhaseState::Error);
@@ -1151,7 +1148,9 @@ pub fn decide_reconcile(trigger: ReconcileTrigger, workspace: Option<&str>) -> R
                     now_ms.saturating_sub(m) > PERIODIC_FULL_REFRESH_DAYS * 86_400_000
                 });
             if any_missing || any_error || stale_ratio > 0.5 || last_full_age_stale {
-                ReconcilePlan::Full { phases: all_real_phases_for(&workspace_key) }
+                ReconcilePlan::Full {
+                    phases: all_real_phases_for(&workspace_key),
+                }
             } else if drifted.is_empty() {
                 ReconcilePlan::Noop
             } else {
@@ -1426,14 +1425,8 @@ mod tests {
         drop(conn);
 
         let readiness = ReadinessCache::snapshot(None, None);
-        assert_eq!(
-            readiness.reconcile_required,
-            Some(ReconcileRequired::Full)
-        );
-        assert_eq!(
-            readiness.reconcile_reason,
-            Some(ReconcileReason::ColdStart)
-        );
+        assert_eq!(readiness.reconcile_required, Some(ReconcileRequired::Full));
+        assert_eq!(readiness.reconcile_reason, Some(ReconcileReason::ColdStart));
         crate::config::reset_test_home_dir();
     }
 

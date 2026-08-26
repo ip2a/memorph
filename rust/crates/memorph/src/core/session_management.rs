@@ -1532,10 +1532,7 @@ mod tests {
         let mut f = std::fs::File::create(&path).unwrap();
         writeln!(f, "{}", session).unwrap();
 
-        let err = read_session_export_file(
-            path.to_str().unwrap(),
-        )
-        .unwrap_err();
+        let err = read_session_export_file(path.to_str().unwrap()).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("schema mismatch"), "got: {msg}");
         assert!(msg.contains("wrong-schema"), "got: {msg}");
@@ -1552,7 +1549,10 @@ mod tests {
                 name: OASF_SCHEMA_NAME.to_string(),
                 version: OASF_SCHEMA_VERSION,
             },
-            identity: Identity { id: "s-1".to_string(), title: None },
+            identity: Identity {
+                id: "s-1".to_string(),
+                title: None,
+            },
             context: Context::default(),
             events: Vec::new(),
             extensions: Default::default(),

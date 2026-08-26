@@ -246,7 +246,10 @@ mod tests {
         let now = Utc::now();
         let blocks = vec![
             Block::Text { text: "t".into() },
-            Block::Thinking { text: "th".into(), signature: None },
+            Block::Thinking {
+                text: "th".into(),
+                signature: None,
+            },
             Block::ToolCall {
                 tool_call_id: "tc1".into(),
                 name: "tool".into(),
@@ -259,8 +262,11 @@ mod tests {
             },
             Block::Patch {
                 summary: None,
-                diff_text: Some("--- a
-+++ b".into()),
+                diff_text: Some(
+                    "--- a
++++ b"
+                        .into(),
+                ),
                 files: vec!["f".into()],
                 hash: None,
             },
@@ -274,8 +280,12 @@ mod tests {
                 content: Some("c".into()),
                 mime_type: None,
             },
-            Block::Compressed { raw: serde_json::json!({"summary": "s"}) },
-            Block::Other { raw: serde_json::json!({"custom": "payload"}) },
+            Block::Compressed {
+                raw: serde_json::json!({"summary": "s"}),
+            },
+            Block::Other {
+                raw: serde_json::json!({"custom": "payload"}),
+            },
         ];
 
         let session = crate::session::Session {
@@ -284,7 +294,10 @@ mod tests {
                 name: crate::session::OASF_SCHEMA_NAME.into(),
                 version: crate::session::OASF_SCHEMA_VERSION,
             },
-            identity: Identity { id: "s1".into(), title: None },
+            identity: Identity {
+                id: "s1".into(),
+                title: None,
+            },
             context: Context::default(),
             events: vec![crate::session::Event {
                 id: "e1".into(),
@@ -295,7 +308,10 @@ mod tests {
                 blocks,
                 tags: Vec::new(),
                 extensions: Default::default(),
-                metadata: Metadata { model: None, usage: None },
+                metadata: Metadata {
+                    model: None,
+                    usage: None,
+                },
             }],
             extensions: Default::default(),
         };
