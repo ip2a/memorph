@@ -7,5 +7,6 @@ pub mod groups;
 pub mod health;
 pub mod inspection;
 pub mod invocation;
+pub mod management;
 pub mod repository;
 pub mod scanner;
