@@ -33,13 +33,14 @@ export function getBlockLabel(block: EventBlock, t?: Translator): string {
 }
 
 export type SessionBlockTag = {
-  type: EventBlock["type"];
+  /** Block kind, or the synthetic "chain" header chip from getEventHeaderTags. */
+  type: EventBlock["type"] | "chain";
   label: string;
 };
 
 export function getBlockTags(blocks: EventBlock[] | undefined, t?: Translator): SessionBlockTag[] {
   return (blocks ?? [])
-    .map((block) => {
+    .map((block): SessionBlockTag | null => {
       const label = getBlockLabel(block, t);
       return label ? { type: block.type, label } : null;
     })
