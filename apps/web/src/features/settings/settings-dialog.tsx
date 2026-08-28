@@ -255,7 +255,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="flex h-[min(70dvh,640px)] flex-col gap-0 p-0 sm:max-w-3xl" data-settings-dialog>
+      <DialogContent variant="panel" className="h-[min(70dvh,640px)] sm:max-w-3xl" data-settings-dialog>
         <DialogHeader variant="bordered" className="flex-row items-center">
           <DialogTitle className="flex-1">{t("settings")}</DialogTitle>
         </DialogHeader>

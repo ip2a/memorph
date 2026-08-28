@@ -271,6 +271,7 @@ type WorkspaceSwitchDialogProps =
 export function WorkspaceSwitchDialog(props: WorkspaceSwitchDialogProps) {
   const { open, onOpenChange } = props;
   const isPickMode = props.mode === "pick";
+  const pickValue = isPickMode ? props.value : undefined;
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const selectedWorkspace = useUiStore((state) => state.selectedWorkspace);
@@ -300,14 +301,14 @@ export function WorkspaceSwitchDialog(props: WorkspaceSwitchDialogProps) {
   });
 
   const currentWorkspace = isPickMode
-    ? props.value?.trim() || ""
+    ? pickValue?.trim() || ""
     : selectedWorkspace || meta.data?.selected_workspace || "";
   const draftWorkspace = draft ?? currentWorkspace;
 
   useEffect(() => {
     if (!open || !isPickMode) return;
-    setDraft(props.value?.trim() || null);
-  }, [isPickMode, open, props.value]);
+    setDraft(pickValue?.trim() || null);
+  }, [isPickMode, open, pickValue]);
   const workspaceItems = useMemo(() => workspaces.data ?? meta.data?.workspaces ?? [], [meta.data?.workspaces, workspaces.data]);
   const filteredWorkspaceItems = useMemo(
     () => workspaceItems.filter((workspace) => matchesWorkspaceSearch(workspace.path, search)),

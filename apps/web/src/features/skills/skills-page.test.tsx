@@ -11,12 +11,25 @@ import {
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { I18nContext } from "@/lib/i18n-context";
 import { translate } from "@/lib/i18n-core";
 import type { SkillCatalogParams } from "@/lib/types";
 import { useUiStore } from "@/stores/ui-store";
 import { SkillsPage } from "./skills-page";
+
+// jsdom does not implement scrollIntoView; the coverage panel calls it on mount.
+beforeAll(() => {
+  Element.prototype.scrollIntoView = vi.fn();
+});
 
 const mocks = vi.hoisted(() => ({
   useSkills: vi.fn(),
@@ -194,6 +207,35 @@ const items = [
     updated_at_ms: 1,
     tags: ["documentation"],
     used_by: ["claude", "gemini"],
+    installation_targets: [
+      {
+        used_by: "claude",
+        scope_kind: "global",
+        expected_path: "/home/test/.claude/skills/document-writer",
+        installation: {
+          used_by: "claude",
+          scope_kind: "global",
+          install_path: "/home/test/.claude/skills/document-writer",
+          install_kind: "directory",
+          link_status: "not-applicable",
+          status: "active",
+        },
+      },
+      {
+        used_by: "gemini",
+        scope_kind: "global",
+        expected_path: "/home/test/.gemini/skills/document-writer",
+        installation: {
+          used_by: "gemini",
+          scope_kind: "global",
+          install_path: "/home/test/.gemini/skills/document-writer",
+          install_kind: "symlink",
+          symlink_target: "/home/test/.claude/skills/document-writer",
+          link_status: "valid",
+          status: "active",
+        },
+      },
+    ],
     installations: [
       {
         used_by: "claude",
@@ -226,6 +268,21 @@ const items = [
     updated_at_ms: 1,
     tags: ["review"],
     used_by: ["codex"],
+    installation_targets: [
+      {
+        used_by: "codex",
+        scope_kind: "global",
+        expected_path: "/home/test/.codex/skills/reviewer",
+        installation: {
+          used_by: "codex",
+          scope_kind: "global",
+          install_path: "/home/test/.codex/skills/reviewer",
+          install_kind: "managed-copy",
+          link_status: "not-applicable",
+          status: "active",
+        },
+      },
+    ],
     installations: [
       {
         used_by: "codex",
@@ -464,7 +521,8 @@ describe("SkillsPage", () => {
     const user = userEvent.setup();
     renderRoute();
 
-    expect(screen.getByText("1–50/51 · 1/2")).toBeTruthy();
+    // Page size loads asynchronously from settings; wait for it to apply.
+    expect(await screen.findByText("1–50/51 · 1/2")).toBeTruthy();
     expect(screen.getByText("Skill 0")).toBeTruthy();
     expect(screen.queryByText("Skill 50")).toBeNull();
 
@@ -559,7 +617,8 @@ describe("SkillsPage", () => {
     });
     const user = userEvent.setup();
     renderRoute();
-    await user.click(screen.getByRole("tab", { name: "Activity" }));
+    // The activity heatmap lives under the overview panel's "Analyze" tab.
+    await user.click(screen.getByRole("tab", { name: "Analyze" }));
     expect(mocks.useSkillGraph).toHaveBeenLastCalledWith(
       expect.not.objectContaining({ workspace: expect.anything() }),
     );
