@@ -381,7 +381,7 @@ function DetailEventItem({
       <Collapsible open={open} onOpenChange={onOpenChange}>
         <article
           className={cn(
-            "flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-card",
+            "flex min-h-0 flex-col overflow-hidden rounded-lg border border-border/50 bg-card shadow-xs dark:border-border",
             highlighted && "outline-2 outline-foreground/35 -outline-offset-2",
           )}
           data-event-number={eventNumber}

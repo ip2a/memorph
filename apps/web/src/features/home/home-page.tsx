@@ -128,10 +128,10 @@ function HomeHero({ workspace }: { workspace: string | null | undefined }) {
 
   if (collapsed) {
     return (
-      <section className="-mt-3 border-b py-2">
+      <section className="py-2">
         <button
           type="button"
-          className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md px-2 py-1 text-left hover:bg-muted"
+          className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md px-2 py-1 text-left transition-colors hover:bg-background/60"
           onClick={() => setHeroCollapsed(false)}
           aria-label={t("expandWorkspaceBanner")}
         >
@@ -147,10 +147,10 @@ function HomeHero({ workspace }: { workspace: string | null | undefined }) {
   }
 
   return (
-    <section className="-mt-3 grid grid-cols-1 items-start gap-3 overflow-hidden border-b py-3 md:grid-cols-[minmax(0,7fr)_minmax(220px,3fr)]">
+    <section className="grid grid-cols-1 items-start gap-3 overflow-hidden py-3 md:grid-cols-[minmax(0,7fr)_minmax(220px,3fr)]">
       <button
         type="button"
-        className="group grid min-w-0 place-items-center overflow-hidden rounded-md text-left hover:bg-muted/30"
+        className="group grid min-w-0 place-items-center overflow-hidden rounded-md text-left transition-colors hover:bg-background/60"
         onClick={() => setHeroCollapsed(true)}
         title={t("collapse")}
         style={{ ["--ascii-banner-color" as string]: bannerColor }}
@@ -766,7 +766,7 @@ export function HomePage() {
     <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden">
       <HomeHero workspace={selectedWorkspace} />
 
-      <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-md border bg-background">
+      <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-border/50 bg-card shadow-xs dark:border-border">
         <div className="flex shrink-0 items-center gap-3 border-b p-3">
           <div className="flex shrink-0 items-center gap-2">
             <strong className="shrink-0">{t("recentSessions")}</strong>

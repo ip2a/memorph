@@ -55,49 +55,53 @@ export function AppShell() {
   const title = t(routeTitleKey(location.pathname));
 
   return (
-    <div className="mx-auto grid h-dvh w-[min(1280px,calc(100vw-24px))] grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)] overflow-hidden">
-      <header className="flex min-h-16 min-w-0 items-center justify-between gap-4 border-b py-3">
-        <div className="flex min-w-0 shrink items-center gap-3">
-          <Link to="/" className="font-mono font-bold">
-            memorph
-          </Link>
-          {title ? (
-            <>
-              <div className="h-5 w-px bg-border" />
-              <span className="truncate text-sm font-semibold">{title}</span>
-            </>
-          ) : null}
+    <div className="flex h-dvh flex-col overflow-hidden bg-background">
+      <div className="mx-auto flex w-[min(1280px,calc(100vw-24px))] shrink-0 flex-col">
+        <header className="flex min-h-16 min-w-0 items-center justify-between gap-4 py-3">
+          <div className="flex min-w-0 shrink items-center gap-3">
+            <Link to="/" className="font-mono font-bold">
+              memorph
+            </Link>
+            {title ? (
+              <>
+                <div className="h-5 w-px bg-border" />
+                <span className="truncate text-sm font-semibold">{title}</span>
+              </>
+            ) : null}
+          </div>
+
+          <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
+            <ReadinessIndicator />
+            <AppShellNav
+              onOpenImportSession={() => setImportSessionOpen(true)}
+              onOpenSettings={() => setSettingsOpen(true)}
+            />
+          </div>
+        </header>
+
+        <WorkspaceSwitchDialog open={workspaceSwitchOpen} onOpenChange={setWorkspaceSwitchOpen} />
+        <WorkspaceQuickSwitchDialog />
+        {importSessionOpen ? (
+          <Suspense fallback={null}>
+            <ImportSessionDialog open={importSessionOpen} onOpenChange={setImportSessionOpen} />
+          </Suspense>
+        ) : null}
+        {settingsOpen ? (
+          <Suspense fallback={null}>
+            <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+          </Suspense>
+        ) : null}
+      </div>
+
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-muted">
+        <div
+          className={cn(
+            "mx-auto flex min-h-0 w-[min(1280px,calc(100vw-24px))] min-w-0 flex-1 flex-col",
+            fullscreen ? "overflow-hidden pt-3 pb-2" : "overflow-auto py-3",
+          )}
+        >
+          <Outlet />
         </div>
-
-        <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
-          <ReadinessIndicator />
-          <AppShellNav
-            onOpenImportSession={() => setImportSessionOpen(true)}
-            onOpenSettings={() => setSettingsOpen(true)}
-          />
-        </div>
-      </header>
-
-      <WorkspaceSwitchDialog open={workspaceSwitchOpen} onOpenChange={setWorkspaceSwitchOpen} />
-      <WorkspaceQuickSwitchDialog />
-      {importSessionOpen ? (
-        <Suspense fallback={null}>
-          <ImportSessionDialog open={importSessionOpen} onOpenChange={setImportSessionOpen} />
-        </Suspense>
-      ) : null}
-      {settingsOpen ? (
-        <Suspense fallback={null}>
-          <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
-        </Suspense>
-      ) : null}
-
-      <main
-        className={cn(
-          "min-h-0 min-w-0",
-          fullscreen ? "flex h-full flex-col overflow-hidden pt-3" : "overflow-auto py-3",
-        )}
-      >
-        <Outlet />
       </main>
     </div>
   );
