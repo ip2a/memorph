@@ -1,0 +1,86 @@
+name: release-orchestrate
+
+# One command publishes everything for tag vX.Y.Z:
+#   gh workflow run release-orchestrate.yml --ref vX.Y.Z -f version=X.Y.Z
+# Resolves the release-build run for the tag, then serially dispatches:
+#   crates -> npm -> pypi -> latest-json -> post-release-verify
+# Each child keeps its own context validation; this workflow only sequences them.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without leading v (must match tag vX.Y.Z and Cargo.toml)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: release-orchestrate-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  orchestrate:
+    name: orchestrate release v${{ inputs.version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate release context
+        run: python3 scripts/validate_release_context.py
+
+      - name: Resolve release-build run
+        run: |
+          TAG="v$VERSION"
+          RUN_JSON=$(gh run list --workflow=release-build.yml --branch "$TAG" --event push --json databaseId,status,conclusion,headSha --limit 1)
+          echo "$RUN_JSON"
+          RUN_ID=$(echo "$RUN_JSON" | jq -r '.[0].databaseId // empty')
+          STATUS=$(echo "$RUN_JSON" | jq -r '.[0].status // empty')
+          CONCLUSION=$(echo "$RUN_JSON" | jq -r '.[0].conclusion // empty')
+          HEAD_SHA=$(echo "$RUN_JSON" | jq -r '.[0].headSha // empty')
+          [ -n "$RUN_ID" ] || { echo "::error::No release-build run found for tag $TAG"; exit 1; }
+          [ "$STATUS" = "completed" ] || { echo "::error::release-build run $RUN_ID is still $STATUS"; exit 1; }
+          [ "$CONCLUSION" = "success" ] || { echo "::error::release-build run $RUN_ID concluded: $CONCLUSION"; exit 1; }
+          [ "$HEAD_SHA" = "$GITHUB_SHA" ] || { echo "::error::release-build headSha $HEAD_SHA != checkout $GITHUB_SHA"; exit 1; }
+          echo "BUILD_RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+
+      - name: Publish (crates → npm → pypi → latest-json → verify)
+        run: |
+          TAG="v$VERSION"
+          dispatch_and_wait() {
+            local workflow="$1"; shift
+            echo "=== dispatching $workflow ==="
+            gh workflow run "$workflow" --ref "$TAG" "$@"
+            sleep 10
+            local run_id=""
+            for _ in 1 2 3 4 5 6; do
+              run_id=$(gh run list --workflow="$workflow" --branch "$TAG" --event workflow_dispatch --json databaseId,status \
+                --jq '[.[] | select(.status != "completed")][0].databaseId // empty')
+              [ -n "$run_id" ] && break
+              sleep 10
+            done
+            [ -n "$run_id" ] || { echo "::error::$workflow run not found after dispatch"; exit 1; }
+            gh run watch "$run_id" --exit-status
+          }
+          dispatch_and_wait release-publish-crates.yml
+          dispatch_and_wait release-publish-npm.yml -f build_run_id="$BUILD_RUN_ID"
+          dispatch_and_wait release-publish-pypi.yml -f build_run_id="$BUILD_RUN_ID"
+          dispatch_and_wait release-update-latest-json.yml -f version="$VERSION"
+          dispatch_and_wait post-release-verify.yml -f version="$VERSION"
+
+      - name: Release summary
+        run: |
+          gh release view "v$VERSION" --json tagName,isDraft,assets --jq '{tag: .tagName, draft: .isDraft, assets: (.assets | length)}'
