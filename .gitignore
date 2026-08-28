@@ -44,6 +44,7 @@ local/*
 !/rust/crates/**/assets/*.json
 /rust/crates/**/assets/web/
 !/rust/apps/
+!/rust/apps/**/
 !/rust/apps/**/Cargo.toml
 !/rust/apps/**/*.rs
 !/rust/apps/**/assets/
@@ -106,4 +107,4 @@ local/*
 
 
 # Provider-native test fixtures.
-!/rust/crates/memorph/src/*
+!/rust/crates/memorph/src/providers/**/fixtures/**
