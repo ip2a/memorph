@@ -85,11 +85,21 @@ function DialogContent({
   )
 }
 
-function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
+function DialogHeader({
+  className,
+  variant = "default",
+  ...props
+}: React.ComponentProps<"div"> & {
+  variant?: "default" | "bordered"
+}) {
   return (
     <div
       data-slot="dialog-header"
-      className={cn("flex flex-col gap-2", className)}
+      className={cn(
+        "flex flex-col gap-2",
+        variant === "bordered" && "shrink-0 border-b px-4 py-4 sm:px-5",
+        className
+      )}
       {...props}
     />
   )
@@ -97,10 +107,12 @@ function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
 
 function DialogFooter({
   className,
+  variant = "default",
   showCloseButton = false,
   children,
   ...props
 }: React.ComponentProps<"div"> & {
+  variant?: "default" | "bordered"
   showCloseButton?: boolean
 }) {
   const { t } = useI18n()
@@ -108,7 +120,10 @@ function DialogFooter({
     <div
       data-slot="dialog-footer"
       className={cn(
-        "-mx-4 -mb-4 flex flex-col-reverse gap-2 rounded-b-xl border-t bg-muted/50 p-4 sm:flex-row sm:justify-end",
+        "flex flex-col-reverse gap-2 rounded-b-xl border-t sm:flex-row sm:justify-end",
+        variant === "bordered"
+          ? "shrink-0 bg-muted/50 px-4 py-4 sm:px-5"
+          : "-mx-4 -mb-4 bg-muted/50 p-4",
         className
       )}
       {...props}

@@ -626,11 +626,11 @@ function ProviderDetail({
                   className="flex h-[min(85dvh,840px)] w-[min(960px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl"
                   data-agent-capability-details
                 >
-                  <DialogHeader className="shrink-0 border-b px-6 py-4">
+                  <DialogHeader variant="bordered">
                     <DialogTitle>{t("sessionManagementCapability")}</DialogTitle>
                     <DialogDescription>{t("capabilityDescription")}</DialogDescription>
                   </DialogHeader>
-                  <ScrollPane className="min-h-0 flex-1" innerClassName="px-6 py-4">
+                  <ScrollPane className="min-h-0 flex-1" innerClassName="px-4 py-4 sm:px-5">
                     <CapabilityContent capabilities={capabilities} />
                   </ScrollPane>
                 </DialogContent>

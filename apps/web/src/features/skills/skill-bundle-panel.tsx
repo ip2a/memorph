@@ -39,6 +39,12 @@ const CARD_CLASS =
 const FULLSCREEN_DIALOG_CLASS =
   "flex h-[min(95dvh,calc(100dvh-2rem))] w-[min(calc(100vw-2rem),1400px)] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-none";
 
+const BUNDLE_CHROME_CLASS =
+  "flex shrink-0 items-center justify-between gap-3 border-b px-4 py-4 sm:px-5";
+
+const BUNDLE_FOOTER_CLASS =
+  "shrink-0 border-t px-4 py-4 font-mono text-xs text-muted-foreground sm:px-5";
+
 const MARKDOWN_EXTENSIONS = new Set(["md", "markdown", "mdx"]);
 
 const IMAGE_EXTENSIONS = new Set([
@@ -504,7 +510,7 @@ function BundlePreviewPanel({
   return (
     <>
       <Card className={CARD_CLASS} size="sm">
-        <div className="flex shrink-0 items-center justify-between gap-3 border-b px-4 py-2">
+        <div className={BUNDLE_CHROME_CLASS}>
           <h4 className="truncate font-mono text-sm font-semibold tracking-tight">{title}</h4>
           <BundlePreviewToolbar
             {...toolbarProps}
@@ -517,14 +523,14 @@ function BundlePreviewPanel({
           <BundlePreviewContent {...contentProps} />
         </div>
 
-        <div className="shrink-0 border-t px-4 py-2 font-mono text-xs text-muted-foreground">
+        <div className={BUNDLE_FOOTER_CLASS}>
           {asset ? `${asset.path} · ${formatBytes(asset.bytes)}` : "File preview"}
         </div>
       </Card>
 
       <Dialog open={fullscreenOpen} onOpenChange={setFullscreenOpen}>
         <DialogContent className={FULLSCREEN_DIALOG_CLASS} showCloseButton={false}>
-          <DialogHeader className="shrink-0 flex-row items-center justify-between gap-3 space-y-0 border-b px-4 py-2">
+          <DialogHeader variant="bordered" className="flex-row items-center justify-between gap-3 space-y-0">
             <DialogTitle className="min-w-0 truncate font-mono text-sm leading-none">
               {title}
             </DialogTitle>
@@ -535,7 +541,7 @@ function BundlePreviewPanel({
             <BundlePreviewContent {...contentProps} />
           </div>
 
-          <div className="shrink-0 border-t px-4 py-2 font-mono text-xs text-muted-foreground">
+          <div className={BUNDLE_FOOTER_CLASS}>
             {asset ? `${asset.path} · ${formatBytes(asset.bytes)}` : "File preview"}
           </div>
         </DialogContent>

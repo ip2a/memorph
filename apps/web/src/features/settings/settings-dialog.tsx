@@ -256,7 +256,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="flex h-[min(70dvh,640px)] flex-col gap-0 p-0 sm:max-w-3xl" data-settings-dialog>
-        <DialogHeader className="flex-row items-center border-b px-4 py-2.5 sm:px-5">
+        <DialogHeader variant="bordered" className="flex-row items-center">
           <DialogTitle className="flex-1">{t("settings")}</DialogTitle>
         </DialogHeader>
 
@@ -451,7 +451,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
           </ScrollPane>
         </div>
 
-        <DialogFooter className="-mx-0 -mb-0 gap-2 border-t px-4 py-2.5 sm:px-5">
+        <DialogFooter variant="bordered" className="gap-2">
           <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>
             {t("cancel")}
           </Button>

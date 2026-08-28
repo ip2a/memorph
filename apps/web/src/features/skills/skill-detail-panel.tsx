@@ -482,14 +482,14 @@ export function SkillDetailPanel({
                 </Button>
               </DialogTrigger>
             <DialogContent className="flex h-[min(85dvh,840px)] w-[min(960px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
-              <DialogHeader className="shrink-0 border-b px-6 py-4">
+              <DialogHeader variant="bordered">
                 <DialogTitle>{selected.name}</DialogTitle>
                 <DialogDescription>
                   {normalizeSkillDescription(selected.description) ||
                     t("skillsNoDescription")}
                 </DialogDescription>
               </DialogHeader>
-              <ScrollPane className="min-h-0 flex-1" innerClassName="px-6 py-4">
+              <ScrollPane className="min-h-0 flex-1" innerClassName="px-4 py-4 sm:px-5">
                 <DetailSection title={t("skillsDetailsOverview")} className="border-t-0 pt-0">
                   <div className="flex flex-wrap gap-2">
                     <Badge variant="outline">

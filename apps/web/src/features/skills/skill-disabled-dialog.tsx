@@ -39,11 +39,11 @@ export function SkillDisabledDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex h-[min(80dvh,640px)] w-[min(640px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
-        <DialogHeader className="shrink-0 border-b px-6 py-4">
+        <DialogHeader variant="bordered">
           <DialogTitle>{t("skillsDisabledList")}</DialogTitle>
           <DialogDescription>{t("skillsDisabledListDescription")}</DialogDescription>
         </DialogHeader>
-        <ScrollPane className="min-h-0 flex-1" innerClassName="flex flex-col gap-2 px-6 py-4">
+        <ScrollPane className="min-h-0 flex-1" innerClassName="flex flex-col gap-2 px-4 py-4 sm:px-5">
           {disabledQuery.isLoading ? (
             <div className="flex justify-center py-8">
               <Spinner />
