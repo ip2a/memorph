@@ -623,7 +623,8 @@ function ProviderDetail({
                   {t("agentDetails")}
                 </Button>
                 <DialogContent
-                  className="flex h-[min(85dvh,840px)] w-[min(960px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl"
+                  variant="panel"
+                  className="h-[min(85dvh,840px)] w-[min(960px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] sm:max-w-3xl"
                   data-agent-capability-details
                 >
                   <DialogHeader variant="bordered">

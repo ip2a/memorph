@@ -38,7 +38,7 @@ export function SkillDisabledDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[min(80dvh,640px)] w-[min(640px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
+      <DialogContent variant="panel" className="h-[min(80dvh,640px)] w-[min(640px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] sm:max-w-2xl">
         <DialogHeader variant="bordered">
           <DialogTitle>{t("skillsDisabledList")}</DialogTitle>
           <DialogDescription>{t("skillsDisabledListDescription")}</DialogDescription>

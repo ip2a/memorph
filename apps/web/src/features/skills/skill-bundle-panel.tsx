@@ -37,7 +37,7 @@ const CARD_CLASS =
   "flex h-full min-h-0 w-full flex-col gap-0 overflow-hidden rounded-xl border border-border bg-card py-0 shadow-none ring-0";
 
 const FULLSCREEN_DIALOG_CLASS =
-  "flex h-[min(95dvh,calc(100dvh-2rem))] w-[min(calc(100vw-2rem),1400px)] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-none";
+  "h-[min(95dvh,calc(100dvh-2rem))] w-[min(calc(100vw-2rem),1400px)] max-w-[calc(100vw-2rem)] sm:max-w-none";
 
 const BUNDLE_CHROME_CLASS =
   "flex shrink-0 items-center justify-between gap-3 border-b px-4 py-4 sm:px-5";
@@ -529,7 +529,7 @@ function BundlePreviewPanel({
       </Card>
 
       <Dialog open={fullscreenOpen} onOpenChange={setFullscreenOpen}>
-        <DialogContent className={FULLSCREEN_DIALOG_CLASS} showCloseButton={false}>
+        <DialogContent variant="panel" className={FULLSCREEN_DIALOG_CLASS} showCloseButton={false}>
           <DialogHeader variant="bordered" className="flex-row items-center justify-between gap-3 space-y-0">
             <DialogTitle className="min-w-0 truncate font-mono text-sm leading-none">
               {title}
