@@ -255,16 +255,19 @@ pub fn persist_root(
         ],
     )
     .context("Failed to mark missing skill installations")?;
-    tx.execute(
-        "UPDATE skill_catalog SET missing_since_ms = COALESCE(missing_since_ms, ?1), updated_at_ms = ?1
-         WHERE id NOT IN (SELECT DISTINCT skill_id FROM skill_installations WHERE status = 'active')",
-        [now_ms],
-    )?;
-    tx.execute(
-        "UPDATE skill_catalog SET missing_since_ms = NULL
-         WHERE id IN (SELECT DISTINCT skill_id FROM skill_installations WHERE status = 'active')",
-        [],
-    )?;
+        // Skills whose files vanished outside memorph are purged outright via the
+    // delete_skill cascade — no ghost rows left behind to display.
+    let ghost_ids: Vec<String> = {
+        let mut statement = tx.prepare(
+            "SELECT id FROM skill_catalog
+             WHERE id NOT IN (SELECT DISTINCT skill_id FROM skill_installations WHERE status = 'active')",
+        )?;
+        let rows = statement.query_map([], |row| row.get(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for id in &ghost_ids {
+        delete_skill_cascade(&tx, id)?;
+    }
     complete_scan(
         &tx,
         &state_key,
@@ -287,43 +290,50 @@ pub fn persist_root(
 ///
 /// Used by the explicit "delete skill" endpoint, which is per-list-row: the
 /// caller passes the specific `skill_catalog.id` shown in the UI, so only that
-/// one skill copy is removed (not every same-named copy). Unlike a scan — which
-/// marks a removed skill `missing_since_ms` and leaves the row behind as a
-/// ghost — this removes the catalog row, its installations, and all derived
-/// stats (coverage, usage, invocations) in FK-safe order.
+/// one skill copy is removed (not every same-named copy). Removes the catalog row, its installations, and all derived
+/// stats (coverage, usage, invocations) in FK-safe order. Scan-time ghost
+/// cleanup routes through the same [`delete_skill_cascade`].
 pub fn delete_skill(conn: &mut Connection, catalog_id: &str) -> Result<()> {
     let tx = conn
         .transaction()
         .context("Failed to start skill deletion transaction")?;
+    delete_skill_cascade(&tx, catalog_id)?;
+    tx.commit().context("Failed to commit skill deletion")?;
+    Ok(())
+}
+
+/// Children-before-parents delete of one catalog row and every row that
+/// references it, by the catalog row's hash id. Shared by [`delete_skill`]
+/// (own transaction) and scan-time ghost cleanup (inside the scan tx).
+fn delete_skill_cascade(conn: &Connection, catalog_id: &str) -> Result<()> {
     // Children before parents. Active tables referencing skill_catalog(id):
     // skill_coverage_observations, skill_usage_daily, skill_invocations,
     // skill_installations — then the catalog row itself.
-    tx.execute(
+    conn.execute(
         "DELETE FROM skill_coverage_observations WHERE skill_id = ?1",
         params![catalog_id],
     )
     .context("Failed to delete skill coverage observations")?;
-    tx.execute(
+    conn.execute(
         "DELETE FROM skill_usage_daily WHERE skill_id = ?1",
         params![catalog_id],
     )
     .context("Failed to delete skill usage")?;
-    tx.execute(
+    conn.execute(
         "DELETE FROM skill_invocations WHERE skill_id = ?1",
         params![catalog_id],
     )
     .context("Failed to delete skill invocations")?;
-    tx.execute(
+    conn.execute(
         "DELETE FROM skill_installations WHERE skill_id = ?1",
         params![catalog_id],
     )
     .context("Failed to delete skill installations")?;
-    tx.execute(
+    conn.execute(
         "DELETE FROM skill_catalog WHERE id = ?1",
         params![catalog_id],
     )
     .context("Failed to delete skill catalog row")?;
-    tx.commit().context("Failed to commit skill deletion")?;
     Ok(())
 }
 
