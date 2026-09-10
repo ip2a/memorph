@@ -12,13 +12,14 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   formatSkillsStatsRangeLabel,
+  readCustomRangePreferenceOrDefault,
   readSkillsStatsCustomRange,
   writeSkillsStatsCustomRange,
 } from "@/features/skills/skills-stats-preferences";
 import type { SkillStatsParams } from "@/lib/types";
 import { useI18n } from "@/lib/i18n-context";
 
-const RANGE_DAYS = { "7d": 7, "30d": 30, "90d": 90 } as const;
+const RANGE_DAYS = { "7d": 7, "30d": 30 } as const;
 export type SkillStatsRange = keyof typeof RANGE_DAYS | "custom";
 
 function localDate(date: Date) {
@@ -34,7 +35,7 @@ function presetRange(range: keyof typeof RANGE_DAYS) {
 }
 
 function defaultCustomDates() {
-  return readSkillsStatsCustomRange() ?? presetRange("30d");
+  return readCustomRangePreferenceOrDefault();
 }
 
 export function useSkillStatsFilters(provider?: string) {
@@ -178,7 +179,6 @@ export function SkillStatsFilterTabs({ className }: { className?: string }) {
         <TabsList aria-label={t("skillsStatsRange")}>
           <TabsTrigger value="7d">{t("skillsDays", { count: 7 })}</TabsTrigger>
           <TabsTrigger value="30d">{t("skillsDays", { count: 30 })}</TabsTrigger>
-          <TabsTrigger value="90d">{t("skillsDays", { count: 90 })}</TabsTrigger>
           <TabsTrigger
             value="custom"
             onClick={() => {

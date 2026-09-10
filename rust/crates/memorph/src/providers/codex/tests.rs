@@ -628,6 +628,39 @@ fn rename_backup_restores_only_codex_title_owned_state() {
 }
 
 #[test]
+fn rename_codex_session_missing_from_index_self_heals_when_rollout_exists() {
+    let codex_dir = tempdir().unwrap();
+    let _guard = use_test_codex_dir(codex_dir.path().to_path_buf());
+    let session_id = "session-rename-unindexed";
+    let fixture = write_native_codex_fixture(codex_dir.path(), session_id);
+    // 模拟归档/放出后 index 条目丢失:只留 rollout,清掉 index 里该条目。
+    let other_line = std::fs::read_to_string(&fixture.index_path)
+        .unwrap()
+        .lines()
+        .find(|line| line.contains("session-other"))
+        .unwrap()
+        .to_string();
+    std::fs::write(&fixture.index_path, other_line + "\n").unwrap();
+
+    // 备份阶段也要放行,不能因为 index 缺条目就 bail。
+    create_codex_session_backup(
+        ProviderSourceMutation::Rename,
+        "operation-rename-unindexed",
+        session_id,
+        &codex_dir.path().join("backups"),
+    )
+    .unwrap();
+    rename_codex_session(session_id, "Healed").unwrap();
+
+    let entries = load_session_index_entries(&fixture.index_path).unwrap();
+    assert_eq!(entries.get(session_id).map(String::as_str), Some("Healed"));
+    let summary = read_codex_rollout_summary(&fixture.rollout_path)
+        .unwrap()
+        .unwrap();
+    assert_eq!(summary.title.as_deref(), Some("Healed"));
+}
+
+#[test]
 fn codex_backup_contract_and_capabilities_are_truthful() {
     let codex_dir = tempdir().unwrap();
     let _guard = use_test_codex_dir(codex_dir.path().to_path_buf());
@@ -2896,4 +2929,170 @@ fn codex_test_event(id: &str, kind: EventKind, role: Role, blocks: Vec<Block>) -
             usage: None,
         },
     }
+}
+
+#[test]
+fn codex_export_emits_native_function_call_and_output_for_tool_blocks() {
+    let assistant_event = codex_test_event(
+        "call-1",
+        EventKind::Action,
+        Role::Assistant,
+        vec![Block::ToolCall {
+            tool_call_id: "call-1".to_string(),
+            name: "shell".to_string(),
+            input: Some(json!({"command": "ls"})),
+        }],
+    );
+    let tool_event = codex_test_event(
+        "call-1-result",
+        EventKind::Observation,
+        Role::Tool,
+        vec![Block::ToolResult {
+            tool_call_id: "call-1".to_string(),
+            content: "file.txt".to_string(),
+            outcome: crate::session::execution_outcome(false),
+        }],
+    );
+
+    let assistant_lines = super::write::codex_tool_response_items(&assistant_event);
+    assert_eq!(assistant_lines.len(), 1);
+    let payload = &assistant_lines[0]["payload"];
+    assert_eq!(payload["type"], json!("function_call"));
+    assert_eq!(payload["name"], json!("shell"));
+    assert_eq!(payload["call_id"], json!("call-1"));
+    assert_eq!(payload["phase"], json!("final_answer"));
+
+    let tool_lines = super::write::codex_tool_response_items(&tool_event);
+    assert_eq!(tool_lines.len(), 1);
+    let payload = &tool_lines[0]["payload"];
+    assert_eq!(payload["type"], json!("function_call_output"));
+    assert_eq!(payload["call_id"], json!("call-1"));
+    assert_eq!(payload["output"], json!("file.txt"));
+    assert_eq!(payload["is_error"], json!(false));
+}
+
+#[test]
+fn codex_export_then_import_round_trips_tool_call_and_result() {
+    let temp = tempdir().unwrap();
+    let codex_dir = temp.path().join(".codex");
+    let workspace = temp.path().join("repo");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(
+        codex_dir.join("config.toml"),
+        "model_provider = \"test-provider\"\n",
+    )
+    .unwrap();
+    let _guard = use_test_codex_dir(codex_dir.clone());
+
+    let session = Session {
+        lineage: Vec::new(),
+        schema: Schema::default(),
+        identity: Identity {
+            id: "rt-source".to_string(),
+            title: Some("Codex Round Trip".to_string()),
+        },
+        context: Context {
+            workspace: Some(workspace.to_string_lossy().to_string()),
+            created_at: None,
+            last_active_at: None,
+            tags: Vec::new(),
+        },
+        events: vec![
+            codex_test_event(
+                "rt-user",
+                EventKind::Message,
+                Role::User,
+                vec![Block::Text {
+                    text: "list files".to_string(),
+                }],
+            ),
+            codex_test_event(
+                "rt-assistant",
+                EventKind::Action,
+                Role::Assistant,
+                vec![
+                    Block::Text {
+                        text: "running ls".to_string(),
+                    },
+                    Block::ToolCall {
+                        tool_call_id: "call-rt1".to_string(),
+                        name: "shell".to_string(),
+                        input: Some(json!({"command": "ls"})),
+                    },
+                ],
+            ),
+            codex_test_event(
+                "rt-result",
+                EventKind::Observation,
+                Role::Tool,
+                vec![Block::ToolResult {
+                    tool_call_id: "call-rt1".to_string(),
+                    content: "Cargo.toml".to_string(),
+                    outcome: crate::session::execution_outcome(false),
+                }],
+            ),
+        ],
+        extensions: BTreeMap::new(),
+    };
+
+    let session_id =
+        export_canonical_session_in_codex_dir(&session, &workspace, &codex_dir).unwrap();
+
+    let rollout_path = WalkDir::new(codex_dir.join("sessions"))
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.into_path())
+        .find(|path| {
+            path.extension().and_then(|value| value.to_str()) == Some("jsonl")
+                && path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| value.contains(&session_id))
+        })
+        .expect("exported rollout file");
+
+    let imported = super::load::import_canonical_session(&rollout_path).unwrap();
+
+    // ToolCall survives.
+    let assistant = imported
+        .session
+        .events
+        .iter()
+        .find(|e| e.role == Role::Assistant)
+        .expect("assistant event survived round-trip");
+    assert!(
+        assistant.blocks.iter().any(|b| matches!(
+            b,
+            Block::ToolCall { tool_call_id, name, .. }
+                if tool_call_id == "call-rt1" && name == "shell"
+        )),
+        "ToolCall did not round-trip; blocks = {:?}",
+        assistant.blocks
+    );
+
+    // ToolResult survives.
+    assert!(
+        imported.session.events.iter().any(|e| {
+            e.blocks.iter().any(|b| {
+                matches!(
+                    b,
+                    Block::ToolResult { tool_call_id, content, .. }
+                        if tool_call_id == "call-rt1" && content == "Cargo.toml"
+                )
+            })
+        }),
+        "ToolResult did not round-trip"
+    );
+
+    // User text survives.
+    assert!(
+        imported.session.events.iter().any(|e| {
+            e.role == Role::User
+                && e.blocks
+                    .iter()
+                    .any(|b| matches!(b, Block::Text { text } if text == "list files"))
+        }),
+        "user text did not round-trip"
+    );
 }

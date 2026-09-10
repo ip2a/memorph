@@ -417,6 +417,7 @@ fn summary_from_parsed(
     parsed: &ParsedGeminiSession,
 ) -> ProviderSessionSummary {
     ProviderSessionSummary {
+        archived: false,
         session_id: session_id.to_string(),
         title: session_title(parsed),
         project_dir: None,
@@ -613,11 +614,13 @@ fn message_blocks(message: &Value, report: &mut MappingReport, index: usize) -> 
                 blocks.push(Block::ToolResult {
                     tool_call_id,
                     content: extract_text(result),
-                    outcome: crate::session::execution_outcome(tool_call
-                        .get("status")
-                        .and_then(Value::as_str)
-                        .map(|status| status.eq_ignore_ascii_case("error"))
-                        .unwrap_or(false)),
+                    outcome: crate::session::execution_outcome(
+                        tool_call
+                            .get("status")
+                            .and_then(Value::as_str)
+                            .map(|status| status.eq_ignore_ascii_case("error"))
+                            .unwrap_or(false),
+                    ),
                 });
             }
         }

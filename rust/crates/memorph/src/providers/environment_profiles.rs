@@ -5,6 +5,7 @@ pub(crate) fn executable_candidates(provider_id: &str) -> &'static [&'static str
     match provider_id.as_str() {
         "augment" => &["auggie"],
         "antigravity" => &["antigravity"],
+        "amazonq" => &["q"],
         "claude" => &["claude"],
         "codex" => &["codex"],
         "cline" => &["cline"],
@@ -21,6 +22,7 @@ pub(crate) fn executable_candidates(provider_id: &str) -> &'static [&'static str
         "openclaw" => &["openclaw"],
         "pi" => &["pi"],
         "qoder" => &["qoder"],
+        "qwen" => &["qwen"],
         "trae" => &["trae"],
         "workbuddy" => &["workbuddy"],
         "windsurf" => &["windsurf"],
@@ -33,6 +35,9 @@ pub(crate) fn config_path(provider_id: &str) -> PathBuf {
     match provider_id.as_str() {
         "augment" => home_join(".augment"),
         "antigravity" => home_join(".antigravity"),
+        "amazonq" => dirs::data_local_dir()
+            .map(|dir| dir.join("amazon-q"))
+            .unwrap_or_else(|| PathBuf::from("amazon-q")),
         "claude" => home_join(".claude"),
         "codex" => home_join(".codex"),
         "cline" => home_join("Documents/Cline"),
@@ -51,6 +56,7 @@ pub(crate) fn config_path(provider_id: &str) -> PathBuf {
         "openclaw" => home_join(".openclaw"),
         "pi" => home_join(".pi/agent"),
         "qoder" => home_join(".qoder"),
+        "qwen" => home_join(".qwen"),
         "trae" => home_join(".trae"),
         "workbuddy" => home_join(".workbuddy"),
         "windsurf" => app_config_dir("Windsurf", ".config/Windsurf"),
@@ -143,6 +149,13 @@ mod tests {
         assert_eq!(config_path("opencode"), home_join(".config/opencode"));
         assert_eq!(config_path("gemini"), home_join(".gemini"));
         assert_eq!(config_path("kimi"), home_join(".kimi"));
+        assert_eq!(config_path("qwen"), home_join(".qwen"));
+        assert_eq!(
+            config_path("amazonq"),
+            dirs::data_local_dir()
+                .map(|dir| dir.join("amazon-q"))
+                .unwrap_or_else(|| PathBuf::from("amazon-q"))
+        );
     }
 
     #[test]
@@ -167,6 +180,8 @@ mod tests {
             "workbuddy",
             "hermes",
             "pi",
+            "amazonq",
+            "qwen",
         ] {
             assert!(
                 !executable_candidates(provider).is_empty(),

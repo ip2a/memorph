@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
@@ -13,7 +13,6 @@ import { SectionHeading } from "@/components/shared/section-heading";
 import { ProviderLogo } from "@/components/shared/provider-logo";
 import { SelectableRowButton } from "@/components/shared/selectable-row-button";
 import { TwoPanePage } from "@/components/shared/two-pane-page";
-import { WorkspaceIdentity } from "@/components/shared/workspace-identity";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -32,18 +31,65 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useManagerMeta, useManagerPreview } from "@/features/manager/queries";
-import { CompressSessionDialog } from "@/features/compression/compression-actions";
-import { useCompressionArchive, useCompressionArchives, useCompressionProviders, useRestoreCompressionArchive } from "@/features/compression/queries";
+import { useManagerMeta } from "@/features/manager/queries";
+import { useCompressionArchive, useCompressionArchives, useRestoreCompressionArchive } from "@/features/compression/queries";
 import { SessionBlock } from "@/features/sessions/session-block";
 import { formatBytes, formatDateTime } from "@/lib/format";
 import { useI18n } from "@/lib/i18n-context";
-import type { CompressionArchive, CompressionArchiveSummary, CompressionFormat, CompressionProviderSupport, ManagerItem, SessionEvent } from "@/lib/types";
+import type { CompressionArchive, CompressionArchiveSummary, CompressionFormat, SessionEvent } from "@/lib/types";
 
 type RestoreTarget = {
   archiveRef: string;
   title: string;
 };
+
+type CompressedSessionEntry = {
+  key: string;
+  providerId: string;
+  sessionId: string;
+  archives: CompressionArchiveSummary[];
+  latestCreatedAt: string;
+  totalStoredBytes: number;
+  workspaceDir?: string | null;
+};
+
+function sessionKey(providerId: string, sessionId: string) {
+  return `${providerId}:${sessionId}`;
+}
+
+function groupArchivesBySession(archives: CompressionArchiveSummary[]): CompressedSessionEntry[] {
+  const map = new Map<string, CompressedSessionEntry>();
+  for (const archive of archives) {
+    const key = sessionKey(archive.source_provider_id, archive.canonical_id);
+    const existing = map.get(key);
+    if (existing) {
+      existing.archives.push(archive);
+      existing.totalStoredBytes += archive.stored_size_bytes;
+      if (archive.created_at > existing.latestCreatedAt) {
+        existing.latestCreatedAt = archive.created_at;
+      }
+      if (!existing.workspaceDir && archive.workspace_dir) {
+        existing.workspaceDir = archive.workspace_dir;
+      }
+    } else {
+      map.set(key, {
+        key,
+        providerId: archive.source_provider_id,
+        sessionId: archive.canonical_id,
+        archives: [archive],
+        latestCreatedAt: archive.created_at,
+        totalStoredBytes: archive.stored_size_bytes,
+        workspaceDir: archive.workspace_dir,
+      });
+    }
+  }
+  return [...map.values()]
+    .map((entry) => ({
+      ...entry,
+      archives: [...entry.archives].sort((left, right) => right.created_at.localeCompare(left.created_at)),
+    }))
+    .sort((left, right) => right.latestCreatedAt.localeCompare(left.latestCreatedAt));
+}
 
 function archiveTitle(archive: CompressionArchive, fallback: string, archiveLabel: string) {
   return archive.canonical_id || fallback || archiveLabel;
@@ -57,94 +103,44 @@ function defaultRestorePrefix(archiveRef: string) {
   return prefix || "compression_archive";
 }
 
-function ProviderSupportList({ providers }: { providers: CompressionProviderSupport[] }) {
-  const { t } = useI18n();
-  if (!providers.length) {
-    return (
-      <Empty>
-        <EmptyHeader>
-          <EmptyTitle>{t("compressionNoProviders")}</EmptyTitle>
-          <EmptyDescription>{t("compressionNoProvidersDescription")}</EmptyDescription>
-        </EmptyHeader>
-      </Empty>
-    );
-  }
-
-  return (
-    <ScrollArea className="min-h-0 flex-1 pr-3" data-compression-provider-support>
-      <div className="flex flex-col gap-2">
-        {providers.map((provider) => (
-          <SelectableRowButton
-            key={provider.provider_id}
-            title={provider.provider_id}
-            leading={<ProviderLogo providerId={provider.provider_id} size="sm" alt={provider.provider_id} />}
-          />
-        ))}
-      </div>
-    </ScrollArea>
-  );
-}
-
-function CompressionControlPanel({
-  workspace,
-  providers,
+function CompressedSessionRow({
+  entry,
+  selected,
+  onSelect,
 }: {
-  workspace: string | null | undefined;
-  providers: CompressionProviderSupport[];
+  entry: CompressedSessionEntry;
+  selected: boolean;
+  onSelect: (key: string) => void;
 }) {
-  return (
-    <PanelCard className="min-h-0" data-manager-control-panel>
-      <section className="flex flex-col gap-3 border-b pb-4" data-compression-workspace-summary>
-        <WorkspaceIdentity workspace={workspace} titleClassName="mt-1 block text-lg leading-tight" pathClassName="mt-1" />
-      </section>
-      <ProviderSupportList providers={providers} />
-    </PanelCard>
-  );
-}
-
-function SectionHeader({ title, count }: { title: string; count: number }) {
-  return <SectionHeading data-compression-section-head title={title} badge={count} />;
-}
-
-function CandidateRow({ item, onCompress }: { item: ManagerItem; onCompress: (item: ManagerItem) => void }) {
   const { t } = useI18n();
-  const href = `/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}`;
   return (
-    <EntityRow
-      data-compression-candidate-row
-      actionsProps={{ "data-compression-row-actions": true }}
-      actions={(
-        <>
-          <Button asChild variant="outline">
-            <Link to={href}>{t("view")}</Link>
-          </Button>
-          <Button type="button" variant="outline" onClick={() => onCompress(item)}>
-            {t("compression")}
-          </Button>
-        </>
-      )}
-    >
-        <div className="flex min-w-0 flex-col gap-2">
-          <Link to={href} className="truncate text-sm font-medium hover:underline">
-            {item.title || item.session_id}
-          </Link>
-          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <span className="inline-flex items-center gap-1.5">
-              <ProviderLogo providerId={item.provider_id} size="xs" alt={item.provider_name || item.provider_id} />
-              <span>{item.provider_name || item.provider_id}</span>
+    <SelectableRowButton
+      data-compression-session-row
+      selected={selected}
+      title={entry.sessionId}
+      leading={<ProviderLogo providerId={entry.providerId} size="sm" alt={entry.providerId} />}
+      meta={(
+        <span className="flex flex-col gap-0.5">
+          <span className="flex flex-wrap items-center gap-2">
+            <span>{entry.providerId}</span>
+            <span>{t("compressionArchiveCount", { count: entry.archives.length })}</span>
+            <span>{formatBytes(entry.totalStoredBytes)}</span>
+          </span>
+          {entry.workspaceDir ? (
+            <span className="truncate font-mono text-[11px]" title={entry.workspaceDir}>
+              {entry.workspaceDir}
             </span>
-            <span>{formatBytes(item.size_bytes)}</span>
-            <span>{t("compressionUpdated", { date: formatDateTime(item.last_active_at) })}</span>
-          </div>
-          <PathText value={item.project_dir || item.source_path} fallback="-" wrap="all" />
-        </div>
-    </EntityRow>
+          ) : null}
+        </span>
+      )}
+      onClick={() => onSelect(entry.key)}
+    />
   );
 }
 
 function ArchiveSummaryRow({ archive, onRestore }: { archive: CompressionArchiveSummary; onRestore: (target: RestoreTarget) => void }) {
   const { t } = useI18n();
-  const href = `/compression?archive_ref=${encodeURIComponent(archive.archive_ref)}`;
+  const href = `/compression?session=${encodeURIComponent(sessionKey(archive.source_provider_id, archive.canonical_id))}&archive_ref=${encodeURIComponent(archive.archive_ref)}`;
   const title = archive.canonical_id || archive.archive_ref;
   return (
     <EntityRow
@@ -297,60 +293,88 @@ function RestoreCompressionDialog({
 
 function CompressionOverview() {
   const { t } = useI18n();
-  const [compressTarget, setCompressTarget] = useState<ManagerItem | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
   const [restoreTarget, setRestoreTarget] = useState<RestoreTarget | null>(null);
   const meta = useManagerMeta();
-  const providers = useCompressionProviders();
-  const candidates = useManagerPreview({ sort: "size", limit: 50 });
-  const archives = useCompressionArchives({ limit: 50 });
+  const workspace = meta.data?.selected_workspace ?? undefined;
+  const archives = useCompressionArchives({ workspace, limit: 200 });
+  const compressedSessions = useMemo(
+    () => groupArchivesBySession(archives.data ?? []),
+    [archives.data],
+  );
+  const selectedKey = searchParams.get("session") ?? "";
+  const selectedSession = compressedSessions.find((entry) => entry.key === selectedKey) ?? null;
 
-  if (providers.isLoading || candidates.isLoading || archives.isLoading || meta.isLoading) return <PageSkeleton />;
-  if (providers.error) return <PageError title={t("compressionProvidersLoadFailed")} message={providers.error.message} />;
-  if (candidates.error) return <PageError title={t("compressionCandidatesLoadFailed")} message={candidates.error.message} />;
+  useEffect(() => {
+    if (!compressedSessions.length) return;
+    if (selectedKey && compressedSessions.some((entry) => entry.key === selectedKey)) return;
+    setSearchParams({ session: compressedSessions[0].key }, { replace: true });
+  }, [compressedSessions, selectedKey, setSearchParams]);
+
+  if (archives.isLoading || meta.isLoading) return <PageSkeleton />;
   if (archives.error) return <PageError title={t("compressionArchivesLoadFailed")} message={archives.error.message} />;
   if (meta.error) return <PageError title={t("compressionWorkspaceLoadFailed")} message={meta.error.message} />;
 
-  const providerRows = providers.data ?? [];
-  const candidateRows = candidates.data?.items ?? [];
-  const archiveRows = archives.data ?? [];
+  const archiveRows = selectedSession?.archives ?? [];
 
   return (
-    <TwoPanePage data-manager-page-layout>
-      <CompressionControlPanel workspace={meta.data?.selected_workspace} providers={providerRows} />
-      <PanelCard variant="plain" className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)_auto_minmax(0,1fr)] gap-3" data-manager-result-panel>
-          <SectionHeader title={t("compressSessions")} count={candidates.data?.total_count ?? candidateRows.length} />
-          <ScrollArea className="min-h-0 pr-3">
-            <div className="flex flex-col gap-2">
-              {candidateRows.length ? (
-                candidateRows.map((item) => <CandidateRow key={item.id} item={item} onCompress={setCompressTarget} />)
-              ) : (
-                <PageEmpty title={t("compressionNoSessions")} description={t("compressionNoSessionsDescription")} />
-              )}
-            </div>
-          </ScrollArea>
-          <SectionHeader title={t("compressionArchives")} count={archiveRows.length} />
-          <ScrollArea className="min-h-0 pr-3">
-            <div className="flex flex-col gap-2">
-              {archiveRows.length ? (
-                archiveRows.map((archive) => <ArchiveSummaryRow key={archive.archive_ref} archive={archive} onRestore={setRestoreTarget} />)
-              ) : (
-                <PageEmpty title={t("compressionNoArchives")} description={t("compressionNoArchivesDescription")} />
-              )}
-            </div>
-          </ScrollArea>
+    <div className="flex h-full min-h-0 flex-col">
+    <TwoPanePage className="min-h-0 flex-1" data-compression-page-layout>
+      <PanelCard className="flex min-h-0 flex-col gap-3 p-3" data-compression-session-panel>
+        <SectionHeading title={t("compressionCompressedSessions")} badge={compressedSessions.length} />
+        <ScrollArea className="min-h-0 flex-1 pr-3">
+          <div className="flex flex-col gap-2">
+            {compressedSessions.length ? (
+              compressedSessions.map((entry) => (
+                <CompressedSessionRow
+                  key={entry.key}
+                  entry={entry}
+                  selected={entry.key === selectedKey}
+                  onSelect={(key) => setSearchParams({ session: key })}
+                />
+              ))
+            ) : (
+              <PageEmpty title={t("compressionNoCompressedSessions")} description={t("compressionNoCompressedSessionsDescription")} />
+            )}
+          </div>
+        </ScrollArea>
       </PanelCard>
-      <CompressSessionDialog
-        open={Boolean(compressTarget)}
-        target={compressTarget ? {
-          providerId: compressTarget.provider_id,
-          sessionId: compressTarget.session_id,
-          title: compressTarget.title || compressTarget.session_id,
-          workspace: compressTarget.project_dir,
-        } : null}
-        onOpenChange={(open) => {
-          if (!open) setCompressTarget(null);
-        }}
-      />
+
+      <PanelCard className="flex min-h-0 flex-col gap-3 p-3" data-compression-archive-panel>
+        {selectedSession ? (
+          <>
+            <div className="flex flex-wrap items-start justify-between gap-3 border-b pb-3">
+              <div className="flex min-w-0 flex-col gap-2">
+                <SectionHeading title={t("compressionArchives")} badge={archiveRows.length} />
+                <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                  <ProviderLogo providerId={selectedSession.providerId} size="xs" alt={selectedSession.providerId} />
+                  <span>{selectedSession.providerId}</span>
+                  <span className="font-mono">{selectedSession.sessionId}</span>
+                </div>
+              </div>
+              <Button asChild variant="outline">
+                <Link to={`/sessions/${encodeURIComponent(selectedSession.providerId)}/${encodeURIComponent(selectedSession.sessionId)}`}>
+                  {t("view")}
+                </Link>
+              </Button>
+            </div>
+            <ScrollArea className="min-h-0 flex-1 pr-3">
+              <div className="flex flex-col gap-2">
+                {archiveRows.length ? (
+                  archiveRows.map((archive) => (
+                    <ArchiveSummaryRow key={archive.archive_ref} archive={archive} onRestore={setRestoreTarget} />
+                  ))
+                ) : (
+                  <PageEmpty title={t("compressionNoArchives")} description={t("compressionNoArchivesDescription")} />
+                )}
+              </div>
+            </ScrollArea>
+          </>
+        ) : (
+          <PageEmpty title={t("compressionSelectSession")} description={t("compressionSelectSessionDescription")} />
+        )}
+      </PanelCard>
+
       <RestoreCompressionDialog
         open={Boolean(restoreTarget)}
         target={restoreTarget}
@@ -359,6 +383,7 @@ function CompressionOverview() {
         }}
       />
     </TwoPanePage>
+    </div>
   );
 }
 
@@ -395,7 +420,7 @@ function EventSection({ event, index }: { event: SessionEvent; index: number }) 
   );
 }
 
-function CompressionArchiveDetail({ archiveRef }: { archiveRef: string }) {
+function CompressionArchiveDetail({ archiveRef, sessionParam }: { archiveRef: string; sessionParam: string }) {
   const { t } = useI18n();
   const [restoreOpen, setRestoreOpen] = useState(false);
   const archive = useCompressionArchive(archiveRef);
@@ -407,6 +432,9 @@ function CompressionArchiveDetail({ archiveRef }: { archiveRef: string }) {
   const data = archive.data;
   const title = archiveTitle(data, archiveRef, t("compressionArchive"));
   const sourceEventCount = data.source_event_ids?.length ?? data.events.length;
+  const sessionHref = sessionParam
+    ? `/compression?session=${encodeURIComponent(sessionParam)}`
+    : `/compression?session=${encodeURIComponent(sessionKey(data.source_provider_id, data.canonical_id))}`;
 
   return (
     <div className="flex min-h-[calc(100vh-124px)] flex-col gap-4">
@@ -427,7 +455,7 @@ function CompressionArchiveDetail({ archiveRef }: { archiveRef: string }) {
         actions={(
           <>
           <Button asChild variant="outline">
-            <Link to="/compression">
+            <Link to={sessionHref}>
               <ArrowLeftIcon data-icon="inline-start" />
               {t("back")}
             </Link>
@@ -494,6 +522,10 @@ function CompressionArchiveDetail({ archiveRef }: { archiveRef: string }) {
 export function CompressionPage() {
   const [searchParams] = useSearchParams();
   const archiveRef = searchParams.get("archive_ref") ?? "";
+  const sessionParam = searchParams.get("session") ?? "";
 
-  return archiveRef ? <CompressionArchiveDetail archiveRef={archiveRef} /> : <CompressionOverview />;
+  if (archiveRef) {
+    return <CompressionArchiveDetail archiveRef={archiveRef} sessionParam={sessionParam} />;
+  }
+  return <CompressionOverview />;
 }

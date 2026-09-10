@@ -92,6 +92,7 @@ impl Provider for ClineProvider {
                 };
                 let title = first_text(&value);
                 sessions.push(ProviderSessionSummary {
+                    archived: false,
                     session_id: task_id,
                     title,
                     project_dir: task_workspace(path),
@@ -180,24 +181,37 @@ impl Provider for ClineProvider {
 
 fn cline_task_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
+    const EXTENSION_IDS: &[&str] = &[
+        "saoudrizwan.claude-dev",
+        "rooveterinaryinc.roo-cline",
+        "kilocode.kilo-code",
+    ];
     #[cfg(target_os = "macos")]
-    for app in ["Code", "Code - Insiders", "VSCodium"] {
+    for app in ["Code", "Code - Insiders", "VSCodium", "Cursor"] {
         if let Some(home) = dirs::home_dir() {
-            roots.push(
-                home.join("Library/Application Support")
-                    .join(app)
-                    .join("User/globalStorage/saoudrizwan.claude-dev/tasks"),
-            );
+            for ext in EXTENSION_IDS {
+                roots.push(
+                    home.join("Library/Application Support")
+                        .join(app)
+                        .join("User/globalStorage")
+                        .join(ext)
+                        .join("tasks"),
+                );
+            }
         }
     }
     #[cfg(target_os = "linux")]
-    for app in ["Code", "Code - Insiders", "VSCodium"] {
+    for app in ["Code", "Code - Insiders", "VSCodium", "Cursor"] {
         if let Some(home) = dirs::home_dir() {
-            roots.push(
-                home.join(".config")
-                    .join(app)
-                    .join("User/globalStorage/saoudrizwan.claude-dev/tasks"),
-            );
+            for ext in EXTENSION_IDS {
+                roots.push(
+                    home.join(".config")
+                        .join(app)
+                        .join("User/globalStorage")
+                        .join(ext)
+                        .join("tasks"),
+                );
+            }
         }
     }
     if let Some(home) = dirs::home_dir() {
@@ -279,14 +293,14 @@ fn history_events(
             }
             let kind = if blocks
                 .iter()
-                .any(|block| matches!(block, Block::ToolCall { .. }))
-            {
-                EventKind::Action
-            } else if blocks
-                .iter()
                 .any(|block| matches!(block, Block::ToolResult { .. }))
             {
                 EventKind::Observation
+            } else if blocks
+                .iter()
+                .any(|block| matches!(block, Block::ToolCall { .. }))
+            {
+                EventKind::Action
             } else {
                 EventKind::Message
             };
@@ -364,10 +378,12 @@ fn message_blocks(item: &Value) -> Vec<Block> {
                         .unwrap_or("unknown")
                         .into(),
                     content: block.get("content").map(value_text).unwrap_or_default(),
-                    outcome: crate::session::execution_outcome(block
-                        .get("is_error")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false)),
+                    outcome: crate::session::execution_outcome(
+                        block
+                            .get("is_error")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                    ),
                 }),
                 _ => None,
             },
@@ -411,5 +427,14 @@ mod tests {
         let blocks = message_blocks(&value);
         assert!(matches!(blocks[0], Block::Thinking { .. }));
         assert!(matches!(blocks[1], Block::ToolCall { ref name, .. } if name == "bash"));
+    }
+    #[test]
+    fn event_with_tool_call_and_result_is_observation() {
+        let value = serde_json::json!({"role":"assistant","content":[{"type":"tool_use","id":"call-1","name":"bash","input":{"cmd":"pwd"}},{"type":"tool_result","tool_use_id":"call-1","content":"done"}]});
+        let blocks = message_blocks(&value);
+        let mut report = MappingReport::new("cline", crate::session::MappingDirection::Import);
+        let events = history_events(&serde_json::json!([value]), chrono::Utc::now(), &mut report);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, crate::session::EventKind::Observation);
     }
 }

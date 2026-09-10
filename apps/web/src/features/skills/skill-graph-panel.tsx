@@ -176,7 +176,7 @@ export function SkillGraphPanel({
   );
 
   if (embedded) {
-    return <div className="space-y-3">{content}</div>;
+    return <div className="min-w-0 space-y-3">{content}</div>;
   }
 
   return <PanelCard className="space-y-3 p-4">{content}</PanelCard>;

@@ -456,6 +456,7 @@ export type HomeButtonSettingsPayload = {
   switch?: boolean;
   export?: boolean;
   sync?: boolean;
+  rename?: boolean;
   delete?: boolean;
 };
 
@@ -626,8 +627,13 @@ export type ReadinessPhaseName =
   | "usage"
   | "derived";
 export type ReadinessFocus = "overview" | Exclude<ReadinessPhaseName, "foundation">;
-export type ReadinessPriority = "background" | "foreground";
-export type ReadinessTrigger = "startup" | "manual" | "workspace_change" | "incomplete_panel" | "retry";
+export type ReadinessTrigger = "startup" | "manual" | "workspace_change" | "retry";
+export type ReadinessReconcileRequired = "none" | "incremental" | "full";
+export type ReadinessReconcileReason =
+  | "cold_start"
+  | "foundation_error"
+  | "stale_signatures"
+  | "periodic_refresh";
 export type ReadinessPhase = {
   state: ReadinessState;
   message?: string | null;
@@ -640,13 +646,15 @@ export type ReadinessPayload = {
   state: ReadinessState;
   active_operation_id?: string | null;
   recommended_focus?: ReadinessFocus | null;
+  reconcile_required?: ReadinessReconcileRequired;
+  reconcile_reason?: ReadinessReconcileReason | null;
+  last_full_at?: number | null;
+  last_incremental_at?: number | null;
   phases: ReadinessPhases;
 };
 
 export type ReadinessReconcilePayload = {
   workspace?: string | null;
-  focus: ReadinessFocus;
-  priority: ReadinessPriority;
   trigger: ReadinessTrigger;
 };
 
@@ -660,10 +668,10 @@ export type ReadinessReconcileResult = {
 
 export type ReadinessOperation = {
   operation_id: string;
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "completed" | "failed" | "superseded";
   readiness: ReadinessPayload;
   trigger: ReadinessTrigger;
-  priority: ReadinessPriority;
+  plan?: "noop" | "incremental" | "full";
   current_phase?: ReadinessPhaseName;
   completed_phases: ReadinessPhaseName[];
   running_phases: ReadinessPhaseName[];
@@ -727,6 +735,7 @@ export type SessionItem = {
   display_title?: string | null;
   hidden: boolean;
   pinned: boolean;
+  archived: boolean;
   stale: boolean;
   preferred_targets: string[];
   project_dir: string | null;
@@ -1433,6 +1442,15 @@ export type SkillInstallation = {
   link_valid: boolean;
   fingerprint: string;
   drifted: boolean;
+  symlink_target?: string | null;
+  scope_kind: "global" | "project";
+  workspace_dir?: string | null;
+  link_status:
+    | "not-applicable"
+    | "valid"
+    | "broken"
+    | "outside-allowed-root"
+    | "loop";
 };
 
 export type SkillStatistics = {
@@ -1503,6 +1521,21 @@ export type SkillMutation = {
   skill_id: string;
   used_by: string;
   source_used_by?: string;
+  scope_kind?: "global" | "project";
+  workspace_dir?: string;
+};
+
+export type SkillAnalysisOperation = {
+  operation_id: string;
+  mode: "incremental" | "full";
+  status: "queued" | "running" | "completed" | "failed";
+  phase: string;
+  processed_sources: number;
+  total_sources: number;
+  percentage: number;
+  started_at_ms?: number | null;
+  completed_at_ms?: number | null;
+  error?: string | null;
 };
 
 export type SkillScanQueued = {
@@ -1523,6 +1556,7 @@ export type SkillCatalogParams = {
   order?: "asc" | "desc";
   page?: number;
   pageSize?: number;
+  workspace?: string;
 };
 
 export type SkillCatalogInstallation = {
@@ -1535,6 +1569,14 @@ export type SkillCatalogInstallation = {
   link_status:
     "not-applicable" | "valid" | "broken" | "outside-allowed-root" | "loop";
   status: "active" | "missing" | "removed" | "error";
+};
+
+export type SkillCatalogInstallationTarget = {
+  used_by: string;
+  scope_kind: "global" | "project";
+  workspace_dir?: string | null;
+  expected_path: string;
+  installation?: SkillCatalogInstallation | null;
 };
 
 export type SkillCatalogItem = {
@@ -1550,6 +1592,7 @@ export type SkillCatalogItem = {
   missing: boolean;
   updated_at_ms: number;
   installations: SkillCatalogInstallation[];
+  installation_targets: SkillCatalogInstallationTarget[];
   tags: string[];
   used_by: string[];
 };
@@ -1566,6 +1609,40 @@ export type SkillCatalogPage = {
   };
   /** True when the catalog looks unpopulated (empty + unknown completeness). */
   needs_scan?: boolean;
+};
+
+export type DisabledSkill = {
+  used_by: string;
+  directory: string;
+  name: string;
+  description?: string | null;
+  archive_path: string;
+};
+
+export type DisabledSkillsPage = {
+  items: DisabledSkill[];
+};
+
+export type SkillGroup = {
+  id: string;
+  name: string;
+  description?: string | null;
+  color?: string | null;
+  sort_order: number;
+  created_at_ms: number;
+  updated_at_ms: number;
+};
+
+export type SkillGroupWithMembers = SkillGroup & {
+  member_skill_ids: string[];
+  member_count: number;
+};
+
+export type SkillGroupInput = {
+  name: string;
+  description?: string | null;
+  color?: string | null;
+  sort_order?: number;
 };
 
 export type SkillStatsParams = {
@@ -1736,35 +1813,6 @@ export type SkillCoverageSummaryItem = {
   covered: number;
   total: number;
   percent: number;
-};
-
-export type SkillPruneItem = {
-  installation_id: string;
-  skill_id: string;
-  name: string;
-  install_path: string;
-  install_kind: string;
-  unused_since_ms: number;
-  last_invoked_at_ms?: number | null;
-  installation_bytes: number;
-  metadata_tokens: number;
-  low_confidence_observations: number;
-  action: string;
-  executable: boolean;
-  blocked_reason?: string | null;
-  expected_fingerprint: string;
-};
-export type SkillPrunePreview = {
-  preview_id: string;
-  days: number;
-  completeness_status: string;
-  blocked_reason?: string | null;
-  items: SkillPruneItem[];
-};
-export type SkillPruneResult = {
-  installation_id: string;
-  status: string;
-  message: string;
 };
 
 export type SkillGraphDay = {

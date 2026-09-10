@@ -18,7 +18,7 @@ export function SkillsCatalogPageSizeControls({
   const clamped = clampSkillsCatalogPageSize(value);
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-wrap items-center gap-2">
       <div className="flex flex-wrap gap-2">
         {SKILLS_CATALOG_PAGE_SIZE_PRESETS.map((preset) => {
           const active = clamped === preset;

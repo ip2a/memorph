@@ -11,12 +11,25 @@ import {
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { I18nContext } from "@/lib/i18n-context";
 import { translate } from "@/lib/i18n-core";
 import type { SkillCatalogParams } from "@/lib/types";
 import { useUiStore } from "@/stores/ui-store";
 import { SkillsPage } from "./skills-page";
+
+// jsdom does not implement scrollIntoView; the coverage panel calls it on mount.
+beforeAll(() => {
+  Element.prototype.scrollIntoView = vi.fn();
+});
 
 const mocks = vi.hoisted(() => ({
   useSkills: vi.fn(),
@@ -33,13 +46,15 @@ const mocks = vi.hoisted(() => ({
   useSkillCoverageEvidence: vi.fn(),
   useSkillConflicts: vi.fn(),
   useSkillGraph: vi.fn(),
-  useSkillPrune: vi.fn(),
-  useExecuteSkillPrune: vi.fn(),
   useUpdateSkillFile: vi.fn(),
   analyze: vi.fn(),
   scan: vi.fn(),
   install: vi.fn(),
   uninstall: vi.fn(),
+  delete: vi.fn(),
+  disable: vi.fn(),
+  consolidate: vi.fn(),
+  removeSymlinks: vi.fn(),
   getMeta: vi.fn(),
   updateSettings: vi.fn(),
 }));
@@ -68,8 +83,6 @@ vi.mock("@/features/skills/queries", () => ({
   useSkillCoverageEvidence: mocks.useSkillCoverageEvidence,
   useSkillConflicts: mocks.useSkillConflicts,
   useSkillGraph: mocks.useSkillGraph,
-  useSkillPrune: mocks.useSkillPrune,
-  useExecuteSkillPrune: mocks.useExecuteSkillPrune,
   useUpdateSkillFile: () => ({
     mutate: vi.fn(),
     isPending: false,
@@ -80,20 +93,104 @@ vi.mock("@/features/skills/queries", () => ({
     isPending: false,
     error: null,
   }),
+  useCurrentSkillAnalysis: () => ({ data: null, isLoading: false }),
+  useSkillAnalysisOperation: () => ({ data: null, isLoading: false }),
   useScanSkills: () => ({
     mutate: mocks.scan,
+    mutateAsync: mocks.scan,
     isPending: false,
+    isSuccess: false,
     error: null,
+    variables: undefined,
+    reset: vi.fn(),
   }),
   useInstallSkill: () => ({
     mutate: mocks.install,
+    mutateAsync: mocks.install,
     isPending: false,
+    isSuccess: false,
     error: null,
+    variables: undefined,
+    reset: vi.fn(),
   }),
   useUninstallSkill: () => ({
     mutate: mocks.uninstall,
+    mutateAsync: mocks.uninstall,
+    isPending: false,
+    isSuccess: false,
+    error: null,
+    variables: undefined,
+    reset: vi.fn(),
+  }),
+  useDeleteSkill: () => ({
+    mutate: mocks.delete,
+    mutateAsync: mocks.delete,
+    isPending: false,
+    isSuccess: false,
+    error: null,
+    variables: undefined,
+    reset: vi.fn(),
+  }),
+  useDisableSkill: () => ({
+    mutate: mocks.disable,
     isPending: false,
     error: null,
+    variables: undefined,
+  }),
+  useConsolidateSkill: () => ({
+    mutate: mocks.consolidate,
+    isPending: false,
+    error: null,
+    variables: undefined,
+  }),
+  useRemoveSymlinksSkill: () => ({
+    mutate: mocks.removeSymlinks,
+    isPending: false,
+    error: null,
+    variables: undefined,
+  }),
+  useDeleteSkillInstallation: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+    error: null,
+    variables: undefined,
+  }),
+  useDisabledSkills: () => ({ data: { items: [] }, isLoading: false }),
+  useSkillGroupInstallations: () => ({
+    data: {
+      installations: [
+        {
+          used_by: "claude",
+          path: "/home/test/.claude/skills/document-writer",
+          managed: false,
+          deployment_mode: "external",
+          link_valid: true,
+          fingerprint: "sha256:a",
+          drifted: false,
+          scope_kind: "global",
+          link_status: "not-applicable",
+        },
+        {
+          used_by: "gemini",
+          path: "/home/test/.gemini/skills/document-writer",
+          managed: true,
+          deployment_mode: "symlink",
+          link_valid: true,
+          fingerprint: "sha256:a",
+          drifted: false,
+          symlink_target: "/home/test/.claude/skills/document-writer",
+          scope_kind: "global",
+          link_status: "valid",
+        },
+      ],
+    },
+    isLoading: false,
+  }),
+  useEnableSkill: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+    error: null,
+    variables: undefined,
   }),
 }));
 
@@ -110,6 +207,35 @@ const items = [
     updated_at_ms: 1,
     tags: ["documentation"],
     used_by: ["claude", "gemini"],
+    installation_targets: [
+      {
+        used_by: "claude",
+        scope_kind: "global",
+        expected_path: "/home/test/.claude/skills/document-writer",
+        installation: {
+          used_by: "claude",
+          scope_kind: "global",
+          install_path: "/home/test/.claude/skills/document-writer",
+          install_kind: "directory",
+          link_status: "not-applicable",
+          status: "active",
+        },
+      },
+      {
+        used_by: "gemini",
+        scope_kind: "global",
+        expected_path: "/home/test/.gemini/skills/document-writer",
+        installation: {
+          used_by: "gemini",
+          scope_kind: "global",
+          install_path: "/home/test/.gemini/skills/document-writer",
+          install_kind: "symlink",
+          symlink_target: "/home/test/.claude/skills/document-writer",
+          link_status: "valid",
+          status: "active",
+        },
+      },
+    ],
     installations: [
       {
         used_by: "claude",
@@ -142,6 +268,21 @@ const items = [
     updated_at_ms: 1,
     tags: ["review"],
     used_by: ["codex"],
+    installation_targets: [
+      {
+        used_by: "codex",
+        scope_kind: "global",
+        expected_path: "/home/test/.codex/skills/reviewer",
+        installation: {
+          used_by: "codex",
+          scope_kind: "global",
+          install_path: "/home/test/.codex/skills/reviewer",
+          install_kind: "managed-copy",
+          link_status: "not-applicable",
+          status: "active",
+        },
+      },
+    ],
     installations: [
       {
         used_by: "codex",
@@ -250,11 +391,6 @@ beforeEach(() => {
   mocks.useSkillGraph.mockReturnValue({
     data: { days: [], total_invocations: 0, max_count: 0 },
     isError: false,
-  });
-  mocks.useSkillPrune.mockReturnValue({ data: { items: [] } });
-  mocks.useExecuteSkillPrune.mockReturnValue({
-    mutate: vi.fn(),
-    isPending: false,
   });
   mocks.useSkillConflicts.mockReturnValue({
     data: [],
@@ -385,7 +521,8 @@ describe("SkillsPage", () => {
     const user = userEvent.setup();
     renderRoute();
 
-    expect(screen.getByText("1–50/51 · 1/2")).toBeTruthy();
+    // Page size loads asynchronously from settings; wait for it to apply.
+    expect(await screen.findByText("1–50/51 · 1/2")).toBeTruthy();
     expect(screen.getByText("Skill 0")).toBeTruthy();
     expect(screen.queryByText("Skill 50")).toBeNull();
 
@@ -480,7 +617,8 @@ describe("SkillsPage", () => {
     });
     const user = userEvent.setup();
     renderRoute();
-    await user.click(screen.getByRole("tab", { name: "Activity" }));
+    // The activity heatmap lives under the overview panel's "Analyze" tab.
+    await user.click(screen.getByRole("tab", { name: "Analyze" }));
     expect(mocks.useSkillGraph).toHaveBeenLastCalledWith(
       expect.not.objectContaining({ workspace: expect.anything() }),
     );
@@ -592,34 +730,84 @@ describe("SkillsPage", () => {
     const user = userEvent.setup();
     renderRoute();
     await user.click(screen.getByText("Document Writer"));
-    await user.click(screen.getByRole("tab", { name: "Used by Agents" }));
+    await user.click(screen.getByRole("tab", { name: "Installations" }));
     const codex = screen
       .getAllByText("codex")
       .map((element) => element.closest("div.rounded-lg"))
       .find(Boolean);
     await user.click(
-      within(codex as HTMLElement).getByRole("button", { name: "Install" }),
+      within(codex as HTMLElement).getByRole("button", {
+        name: "Add symlink for agent",
+      }),
     );
-    expect(mocks.install).toHaveBeenCalledWith({
-      skill_id: "document-writer",
-      used_by: "codex",
-      source_used_by: "claude",
-    });
+    expect(mocks.install).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skill_id: "document-writer",
+        used_by: "codex",
+        source_used_by: "claude",
+        scope_kind: "global",
+      }),
+      expect.any(Object),
+    );
     const gemini = screen
       .getAllByText("gemini")
       .map((element) => element.closest("div.rounded-lg"))
-      .find(Boolean);
+      .filter(Boolean)
+      .find((div) =>
+        within(div as HTMLElement).queryByRole("button", {
+          name: "Remove agent symlink",
+        }),
+      );
     await user.click(
-      within(gemini as HTMLElement).getByRole("button", { name: "Remove" }),
+      within(gemini as HTMLElement).getByRole("button", {
+        name: "Remove agent symlink",
+      }),
     );
     await user.click(
       within(screen.getByRole("alertdialog")).getByRole("button", {
         name: "Remove",
       }),
     );
-    expect(mocks.uninstall).toHaveBeenCalledWith({
-      skill_id: "document-writer",
-      used_by: "gemini",
-    });
+    expect(mocks.uninstall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skill_id: "document-writer",
+        used_by: "gemini",
+        scope_kind: "global",
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("disables the selected skill after confirming", async () => {
+    const user = userEvent.setup();
+    renderRoute();
+    await user.click(screen.getByText("Document Writer"));
+    await user.click(screen.getByRole("button", { name: "Disable" }));
+    await user.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", {
+        name: "Disable",
+      }),
+    );
+    expect(mocks.disable).toHaveBeenCalledWith(
+      "skill:document-writer",
+      expect.anything(),
+    );
+  });
+
+  it("removes symlinks from the consolidate tab", async () => {
+    const user = userEvent.setup();
+    renderRoute();
+    await user.click(screen.getByText("Document Writer"));
+    await user.click(screen.getByRole("tab", { name: "Consolidate" }));
+    await user.click(screen.getByRole("button", { name: "Remove Symlinks" }));
+    await user.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", {
+        name: "Remove Symlinks",
+      }),
+    );
+    expect(mocks.removeSymlinks).toHaveBeenCalledWith(
+      "skill:document-writer",
+      expect.anything(),
+    );
   });
 });

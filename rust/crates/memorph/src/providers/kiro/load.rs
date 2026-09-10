@@ -154,6 +154,7 @@ pub(super) fn session_summary_from_dir(session_dir: &Path) -> Result<ProviderSes
         .or_else(|| source_file_modified_ms(&session_dir.join("messages.jsonl")));
 
     Ok(ProviderSessionSummary {
+        archived: false,
         session_id: metadata.id,
         title,
         project_dir,

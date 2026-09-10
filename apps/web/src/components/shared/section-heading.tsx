@@ -13,7 +13,7 @@ type SectionHeadingProps = Omit<HTMLAttributes<HTMLDivElement>, "title"> & {
   description?: ReactNode;
   eyebrow?: ReactNode;
   title: ReactNode;
-  titleAs?: "h1" | "h2" | "strong";
+  titleAs?: "h1" | "h2" | "h3" | "strong";
   variant?: "compact" | "page";
 };
 

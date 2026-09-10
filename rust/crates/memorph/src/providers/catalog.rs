@@ -100,6 +100,8 @@ fn curated_display_name(canonical_id: &str) -> Option<&'static str> {
         "droid" => "Droid",
         "workbuddy" => "WorkBuddy",
         "hermes" => "Hermes",
+        "qwen" => "Qwen",
+        "amazonq" => "Amazon Q",
         "pi" => "Pi",
         _ => return None,
     })

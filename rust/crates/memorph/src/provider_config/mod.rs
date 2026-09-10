@@ -148,12 +148,27 @@ impl ConfigView {
     }
 }
 
-pub(crate) fn entry_metadata(provider: &str, view: &str, location: &str, value: &Value) -> ConfigEntryMetadata {
+pub(crate) fn entry_metadata(
+    provider: &str,
+    view: &str,
+    location: &str,
+    value: &Value,
+) -> ConfigEntryMetadata {
     let name = location.rsplit(':').next().unwrap_or(location).to_string();
-    let scope = if location.starts_with("project:") { "project" } else { "global" };
+    let scope = if location.starts_with("project:") {
+        "project"
+    } else {
+        "global"
+    };
     ConfigEntryMetadata {
-        entry_id: format!("mcp:sha256:{:x}", Sha256::digest(format!("{provider}:{view}:{location}").as_bytes())),
-        fingerprint: format!("sha256:{:x}", Sha256::digest(serde_json::to_vec(value).unwrap_or_default())),
+        entry_id: format!(
+            "mcp:sha256:{:x}",
+            Sha256::digest(format!("{provider}:{view}:{location}").as_bytes())
+        ),
+        fingerprint: format!(
+            "sha256:{:x}",
+            Sha256::digest(serde_json::to_vec(value).unwrap_or_default())
+        ),
         name,
         scope: scope.into(),
         source: location.into(),
@@ -183,23 +198,56 @@ pub struct RemovalReport {
 
 impl RemovalReport {
     fn already_absent(provider: &str, view: &str, entry: &str) -> Self {
-        Self { provider_id: provider.into(), view_id: view.into(), entry_id: entry.into(), status: "already_absent", changed: false, backup_path: None }
+        Self {
+            provider_id: provider.into(),
+            view_id: view.into(),
+            entry_id: entry.into(),
+            status: "already_absent",
+            changed: false,
+            backup_path: None,
+        }
     }
-    fn removed(provider: &str, view: &str, entry: &str, backup: Option<std::path::PathBuf>) -> Self {
-        Self { provider_id: provider.into(), view_id: view.into(), entry_id: entry.into(), status: "removed", changed: true, backup_path: backup.map(|p| p.display().to_string()) }
+    fn removed(
+        provider: &str,
+        view: &str,
+        entry: &str,
+        backup: Option<std::path::PathBuf>,
+    ) -> Self {
+        Self {
+            provider_id: provider.into(),
+            view_id: view.into(),
+            entry_id: entry.into(),
+            status: "removed",
+            changed: true,
+            backup_path: backup.map(|p| p.display().to_string()),
+        }
     }
 }
 
 fn backup_config(path: &Path) -> anyhow::Result<Option<std::path::PathBuf>> {
-    if !path.is_file() { return Ok(None); }
+    if !path.is_file() {
+        return Ok(None);
+    }
     let stamp = chrono::Utc::now().format("%Y%m%d%H%M%S%f");
-    let backup = path.with_file_name(format!("{}.memorph-config-backup-{stamp}", path.file_name().and_then(|n| n.to_str()).unwrap_or("config")));
+    let backup = path.with_file_name(format!(
+        "{}.memorph-config-backup-{stamp}",
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("config")
+    ));
     std::fs::copy(path, &backup)?;
     Ok(Some(backup))
 }
 
-pub fn remove_mcp(provider_id: &str, view_id: &str, entry_id: &str, expected_fingerprint: &str) -> anyhow::Result<RemovalReport> {
-    if view_id != "view_mcp" || entry_id.is_empty() || expected_fingerprint.is_empty() { return Err(anyhow::anyhow!(RemovalError::Unsupported)); }
+pub fn remove_mcp(
+    provider_id: &str,
+    view_id: &str,
+    entry_id: &str,
+    expected_fingerprint: &str,
+) -> anyhow::Result<RemovalReport> {
+    if view_id != "view_mcp" || entry_id.is_empty() || expected_fingerprint.is_empty() {
+        return Err(anyhow::anyhow!(RemovalError::Unsupported));
+    }
     match crate::providers::canonical_provider_id(provider_id).as_str() {
         "claude" => claude::remove_mcp(entry_id, expected_fingerprint),
         "codex" => codex::remove_mcp(entry_id, expected_fingerprint),

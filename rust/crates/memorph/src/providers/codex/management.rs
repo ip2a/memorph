@@ -64,10 +64,19 @@ pub(super) fn rename_codex_session(session_id: &str, new_title: &str) -> Result<
         }
     }
     if !found {
-        anyhow::bail!("Codex session not found in index: {session_id}");
+        // 诊断:归档后 Codex 会把 rollout 挪进 archived_sessions/ 并从
+        // session_index.jsonl 删掉条目;从归档放出时也不一定补回。只要
+        // rollout 文件还在,就自愈补一条 index 条目而不是报错;文件也
+        // 不在了才是真的找不到。
+        if find_session_file(session_id).is_none() {
+            anyhow::bail!("Codex session not found: {session_id}");
+        }
     }
 
     std::fs::write(&index_path, new_lines.join("\n") + "\n")?;
+    if !found {
+        append_session_index_entry(&index_path, session_id, new_title, None)?;
+    }
     if let Some(session_path) = find_session_file(session_id) {
         update_rollout_session_meta_title(&session_path, new_title)?;
     }

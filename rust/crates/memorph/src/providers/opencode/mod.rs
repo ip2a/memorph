@@ -15,8 +15,8 @@ use crate::provider::{
     export_result, session_title, visible_block_text, CompressionProjection, PageStrategy,
     Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
     ProviderContentFidelity, ProviderSessionBackup, ProviderSessionImportPage,
-    ProviderSessionSummary, ProviderSourceMutation, ProviderWriteRisk, ResumeQuality, ScanStrategy,
-    StorageShape, TurnQuality, WriteRiskLevel,
+    ProviderSessionSummary, ProviderSourceFingerprint, ProviderSourceMutation, ProviderWriteRisk,
+    ResumeQuality, ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
 };
 use crate::session::{
     Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity, ImportedSession, Links,
@@ -146,9 +146,9 @@ impl Provider for OpenCodeProvider {
             export_fidelity: ProviderContentFidelity {
                 text: Some(Fidelity::Preserved),
                 thinking: Some(Fidelity::Preserved),
-                tool_call: Some(Fidelity::Downgraded),
-                tool_result: Some(Fidelity::Downgraded),
-                patch: Some(Fidelity::Downgraded),
+                tool_call: Some(Fidelity::Preserved),
+                tool_result: Some(Fidelity::Preserved),
+                patch: Some(Fidelity::Preserved),
                 image: Some(Fidelity::Downgraded),
                 file: Some(Fidelity::Downgraded),
                 compressed: Some(Fidelity::Preserved),
@@ -213,6 +213,13 @@ impl Provider for OpenCodeProvider {
         let mut imported = import_canonical_session_from_source(&session_id, source_path)?;
         imported.provenance.primary_source.source_path = Some(source_path.to_string());
         Ok(imported)
+    }
+
+    fn session_source_fingerprint(
+        &self,
+        source_path: &str,
+    ) -> Result<Option<ProviderSourceFingerprint>> {
+        opencode_session_source_fingerprint(source_path)
     }
 
     fn import_session_page(

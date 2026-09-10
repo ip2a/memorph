@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import tomllib
@@ -192,6 +193,7 @@ def sync_cargo_lockfile(check: bool, check_lockfile: bool) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sync package versions from Cargo.toml")
+    parser.add_argument("version", nargs="?", help="new version without leading v; rewrites Cargo.toml source first")
     parser.add_argument("--check", action="store_true", help="fail if generated metadata is not already synced")
     parser.add_argument(
         "--check-lockfile",
@@ -199,6 +201,14 @@ def main() -> None:
         help="with --check, also verify Cargo.lock using cargo metadata --locked",
     )
     args = parser.parse_args()
+
+    if args.version is not None:
+        if args.check:
+            raise SystemExit("[error] --check cannot be combined with a version argument")
+        if not re.fullmatch(r"\d+\.\d+\.\d+(-[\w.]+)?", args.version):
+            raise SystemExit(f"[error] Invalid version (no leading v, semver only): {args.version}")
+        update_toml_package_version(ROOT / "rust" / "crates" / "memorph" / "Cargo.toml", args.version, args.check)
+        print(f"[ok] Version source updated: rust/crates/memorph/Cargo.toml -> {args.version}")
 
     version = read_cargo_version()
     repository_url = read_cargo_repository()

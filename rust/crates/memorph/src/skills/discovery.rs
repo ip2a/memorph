@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::inspection::{
-    inspect_bundle, SkillAgent, SkillEntry, SkillInstallation, SkillStatistics, SkillsOverview,
-    MANAGED_MARKER,
+    inspect_bundle, read_frontmatter, SkillAgent, SkillEntry, SkillInstallation, SkillStatistics,
+    SkillsOverview, MANAGED_MARKER,
 };
 
 pub const SKILL_AGENTS: [(&str, &str, &str, &str); 6] = [
@@ -49,6 +49,16 @@ pub fn agents(home: &Path, workspace: Option<&Path>) -> Vec<SkillAgent> {
     agents
 }
 
+/// Dot-prefixed entries are never skills. `.disabled/` parks an archived skill
+/// inside its agent's own skills dir (same filesystem → O(1) rename) while
+/// staying invisible to discovery; this guard makes that contract explicit so a
+/// future recursive scan cannot resurface archived skills.
+fn is_hidden_entry(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with('.'))
+}
+
 pub fn discover(agents: &[SkillAgent]) -> SkillsOverview {
     let mut skills = BTreeMap::<String, SkillEntry>::new();
     for agent in agents {
@@ -59,7 +69,7 @@ pub fn discover(agents: &[SkillAgent]) -> SkillsOverview {
         children.sort_by_key(|entry| entry.file_name());
         for child in children {
             let path = child.path();
-            if !path.is_dir() || !path.join("SKILL.md").is_file() {
+            if is_hidden_entry(&path) || !path.is_dir() || !path.join("SKILL.md").is_file() {
                 continue;
             }
             let directory = child.file_name().to_string_lossy().into_owned();
@@ -73,26 +83,7 @@ pub fn discover(agents: &[SkillAgent]) -> SkillsOverview {
                 }
             };
             let bundle = inspect_bundle(&path);
-            let is_link = path
-                .symlink_metadata()
-                .is_ok_and(|metadata| metadata.file_type().is_symlink());
-            let has_marker = path.join(MANAGED_MARKER).is_file();
-            let installation = SkillInstallation {
-                used_by: installation_used_by(&agent.agent_id).into(),
-                fingerprint: bundle.fingerprint.clone(),
-                drifted: false,
-                managed: is_link || has_marker,
-                deployment_mode: if is_link {
-                    "symlink"
-                } else if has_marker {
-                    "copy"
-                } else {
-                    "external"
-                }
-                .into(),
-                link_valid: !is_link || path.canonicalize().is_ok(),
-                path,
-            };
+            let installation = build_installation(agent, path, bundle.fingerprint.clone());
             let skill = skills.entry(id.clone()).or_insert_with(|| SkillEntry {
                 id,
                 name,
@@ -137,7 +128,7 @@ pub fn discover_catalog(agents: &[SkillAgent]) -> SkillsOverview {
         for child in children.filter_map(Result::ok) {
             let path = child.path();
             let entry_path = path.join("SKILL.md");
-            if !path.is_dir() || !entry_path.is_file() {
+            if is_hidden_entry(&path) || !path.is_dir() || !entry_path.is_file() {
                 continue;
             }
             let directory = child.file_name().to_string_lossy().into_owned();
@@ -151,26 +142,7 @@ pub fn discover_catalog(agents: &[SkillAgent]) -> SkillsOverview {
             let fingerprint = std::fs::read(&entry_path)
                 .map(|body| format!("sha256:{:x}", Sha256::digest(body)))
                 .unwrap_or_else(|_| "sha256:unreadable".into());
-            let is_link = path
-                .symlink_metadata()
-                .is_ok_and(|m| m.file_type().is_symlink());
-            let has_marker = path.join(MANAGED_MARKER).is_file();
-            let installation = SkillInstallation {
-                used_by: installation_used_by(&agent.agent_id).into(),
-                fingerprint: fingerprint.clone(),
-                drifted: false,
-                managed: is_link || has_marker,
-                deployment_mode: if is_link {
-                    "symlink"
-                } else if has_marker {
-                    "copy"
-                } else {
-                    "external"
-                }
-                .into(),
-                link_valid: !is_link || path.canonicalize().is_ok(),
-                path,
-            };
+            let installation = build_installation(agent, path, fingerprint.clone());
             let skill = skills.entry(id.clone()).or_insert_with(|| SkillEntry {
                 id,
                 name,
@@ -201,30 +173,65 @@ fn installation_used_by(agent_id: &str) -> &str {
     }
 }
 
-fn read_metadata(path: &Path, directory: &str) -> (String, Option<String>) {
-    let Ok(contents) = std::fs::read_to_string(path) else {
-        return (directory.to_string(), None);
+fn build_installation(agent: &SkillAgent, path: PathBuf, fingerprint: String) -> SkillInstallation {
+    let is_link = path
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink());
+    let has_marker = path.join(MANAGED_MARKER).is_file();
+    let link_valid = !is_link || path.canonicalize().is_ok();
+    let symlink_target = if is_link {
+        std::fs::read_link(&path)
+            .ok()
+            .map(|target| target.to_string_lossy().into_owned())
+    } else {
+        None
     };
-    let mut name = None;
-    let mut description = None;
-    let mut lines = contents.lines();
-    if lines.next().map(str::trim) == Some("---") {
-        for line in lines {
-            let line = line.trim();
-            if line == "---" {
-                break;
-            }
-            if let Some((key, value)) = line.split_once(':') {
-                let value = value.trim().trim_matches(['\'', '"']);
-                match key.trim() {
-                    "name" if !value.is_empty() => name = Some(value.to_string()),
-                    "description" if !value.is_empty() => description = Some(value.to_string()),
-                    _ => {}
-                }
-            }
+    let link_status = if is_link {
+        if link_valid {
+            "valid"
+        } else {
+            "broken"
         }
+    } else {
+        "not-applicable"
+    };
+    SkillInstallation {
+        used_by: installation_used_by(&agent.agent_id).into(),
+        fingerprint,
+        drifted: false,
+        managed: is_link || has_marker,
+        deployment_mode: if is_link {
+            "symlink"
+        } else if has_marker {
+            "copy"
+        } else {
+            "external"
+        }
+        .into(),
+        link_valid,
+        path,
+        symlink_target,
+        scope_kind: agent.scope_kind.clone(),
+        workspace_dir: agent
+            .workspace_dir
+            .as_ref()
+            .map(|dir| dir.to_string_lossy().into_owned()),
+        link_status: link_status.into(),
     }
-    (name.unwrap_or_else(|| directory.to_string()), description)
+}
+
+fn read_metadata(path: &Path, directory: &str) -> (String, Option<String>) {
+    let frontmatter = read_frontmatter(path);
+    let name = frontmatter
+        .get("name")
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .unwrap_or_else(|| directory.to_string());
+    let description = frontmatter
+        .get("description")
+        .filter(|value| !value.is_empty())
+        .cloned();
+    (name, description)
 }
 
 fn skill_id(name: &str) -> String {
@@ -247,6 +254,33 @@ fn skill_id(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_discovery_reads_multiline_description() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("skills");
+        let skill = root.join("explore");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: explore\ndescription: |\n  first line\n  second line\n---\n",
+        )
+        .unwrap();
+        let agents = vec![SkillAgent {
+            agent_id: "codex".into(),
+            name: "Codex".into(),
+            skills_dir: root,
+            scope_kind: "global".into(),
+            workspace_dir: None,
+        }];
+
+        let overview = discover_catalog(&agents);
+
+        assert_eq!(
+            overview.skills[0].description.as_deref(),
+            Some("first line\nsecond line")
+        );
+    }
 
     #[test]
     fn catalog_discovery_ignores_non_entry_file_bodies() {
@@ -275,5 +309,32 @@ mod tests {
         assert_eq!(first.skills[0].fingerprint, second.skills[0].fingerprint);
         assert_eq!(first.skills[0].statistics.files, 0);
         assert!(first.skills[0].issues.is_empty());
+    }
+
+    #[test]
+    fn discover_skips_dot_prefixed_entries() {
+        // A dot-prefixed folder with a SKILL.md must be ignored. This is the
+        // explicit contract that keeps `.disabled/` archives out of the catalog
+        // even if discovery ever learns to recurse.
+        let dir = tempfile::tempdir().unwrap();
+        let skills_dir = dir.path().join(".codex").join("skills");
+        let visible = skills_dir.join("demo");
+        std::fs::create_dir_all(&visible).unwrap();
+        std::fs::write(visible.join("SKILL.md"), "---\nname: demo\n---\n").unwrap();
+        let hidden = skills_dir.join(".hidden-skill");
+        std::fs::create_dir_all(&hidden).unwrap();
+        std::fs::write(hidden.join("SKILL.md"), "---\nname: hidden\n---\n").unwrap();
+
+        let agents = vec![SkillAgent {
+            agent_id: "codex".into(),
+            name: "Codex".into(),
+            skills_dir,
+            scope_kind: "global".into(),
+            workspace_dir: None,
+        }];
+        let overview = discover(&agents);
+
+        assert_eq!(overview.skills.len(), 1);
+        assert_eq!(overview.skills[0].name, "demo");
     }
 }

@@ -99,7 +99,11 @@ pub fn build_manifest(provider_id: &str) -> Result<AgentCapabilityManifest> {
         mcp_management: has_mcp.then_some(McpManagementCapability {
             list: true,
             inspect: true,
-            remove: has_mcp && matches!(crate::providers::canonical_provider_id(provider_id).as_str(), "claude" | "codex" | "opencode"),
+            remove: has_mcp
+                && matches!(
+                    crate::providers::canonical_provider_id(provider_id).as_str(),
+                    "claude" | "codex" | "opencode"
+                ),
         }),
         plugin_management: has_plugins.then_some(PluginManagementCapability {
             list: true,
@@ -118,7 +122,10 @@ mod tests {
         let manifest = build_manifest("claude").unwrap();
         assert!(manifest.hook_management.is_some());
         assert!(manifest.mcp_management.is_some());
-        assert_eq!(manifest.mcp_management.as_ref().map(|mcp| mcp.remove), Some(true));
+        assert_eq!(
+            manifest.mcp_management.as_ref().map(|mcp| mcp.remove),
+            Some(true)
+        );
         assert!(manifest.plugin_management.is_some());
         assert!(manifest
             .config_views

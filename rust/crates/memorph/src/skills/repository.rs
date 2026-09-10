@@ -282,6 +282,100 @@ pub fn persist_root(
     Ok(true)
 }
 
+/// Hard-delete one catalog row and every row that references it, by the
+/// catalog row's hash id.
+///
+/// Used by the explicit "delete skill" endpoint, which is per-list-row: the
+/// caller passes the specific `skill_catalog.id` shown in the UI, so only that
+/// one skill copy is removed (not every same-named copy). Unlike a scan — which
+/// marks a removed skill `missing_since_ms` and leaves the row behind as a
+/// ghost — this removes the catalog row, its installations, and all derived
+/// stats (coverage, usage, invocations) in FK-safe order.
+pub fn delete_skill(conn: &mut Connection, catalog_id: &str) -> Result<()> {
+    let tx = conn
+        .transaction()
+        .context("Failed to start skill deletion transaction")?;
+    // Children before parents. Active tables referencing skill_catalog(id):
+    // skill_coverage_observations, skill_usage_daily, skill_invocations,
+    // skill_installations — then the catalog row itself.
+    tx.execute(
+        "DELETE FROM skill_coverage_observations WHERE skill_id = ?1",
+        params![catalog_id],
+    )
+    .context("Failed to delete skill coverage observations")?;
+    tx.execute(
+        "DELETE FROM skill_usage_daily WHERE skill_id = ?1",
+        params![catalog_id],
+    )
+    .context("Failed to delete skill usage")?;
+    tx.execute(
+        "DELETE FROM skill_invocations WHERE skill_id = ?1",
+        params![catalog_id],
+    )
+    .context("Failed to delete skill invocations")?;
+    tx.execute(
+        "DELETE FROM skill_installations WHERE skill_id = ?1",
+        params![catalog_id],
+    )
+    .context("Failed to delete skill installations")?;
+    tx.execute(
+        "DELETE FROM skill_catalog WHERE id = ?1",
+        params![catalog_id],
+    )
+    .context("Failed to delete skill catalog row")?;
+    tx.commit().context("Failed to commit skill deletion")?;
+    Ok(())
+}
+
+/// Catalog ids for a normalized name that have no active installation.
+pub fn inactive_catalog_ids_for_name(
+    conn: &Connection,
+    normalized_name: &str,
+) -> Result<Vec<String>> {
+    let mut statement = conn.prepare(
+        "SELECT c.id FROM skill_catalog c
+         WHERE c.normalized_name = ?1
+           AND c.id NOT IN (SELECT DISTINCT skill_id FROM skill_installations WHERE status = 'active')",
+    )?;
+    let rows = statement.query_map([normalized_name], |row| row.get::<_, String>(0))?;
+    let ids: Vec<String> = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids)
+}
+
+/// The single active catalog id for a normalized name, if any. After a
+/// consolidate there is exactly one survivor.
+pub fn active_catalog_id_for_name(
+    conn: &Connection,
+    normalized_name: &str,
+) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT c.id FROM skill_catalog c
+         WHERE c.normalized_name = ?1
+           AND c.id IN (SELECT DISTINCT skill_id FROM skill_installations WHERE status = 'active')",
+            [normalized_name],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?)
+}
+
+/// Delete every catalog row for a normalized skill name that has no active
+/// installation. Consolidation repoints scattered copies at one canonical
+/// directory; the rows for the superseded copies are left without an active
+/// installation and would otherwise linger as "missing" ghosts. This reuses
+/// [`delete_skill`] so the cascade stays in one place.
+pub fn delete_inactive_catalog_rows_for_name(
+    conn: &mut Connection,
+    normalized_name: &str,
+) -> Result<usize> {
+    let orphan_ids = inactive_catalog_ids_for_name(conn, normalized_name)?;
+    let count = orphan_ids.len();
+    for id in &orphan_ids {
+        delete_skill(conn, id)?;
+    }
+    Ok(count)
+}
+
 fn upsert_catalog(tx: &Transaction<'_>, skill: &CatalogRecord, now_ms: i64) -> Result<()> {
     tx.execute(
         "INSERT INTO skill_catalog
@@ -407,6 +501,15 @@ pub struct CatalogInstallation {
 }
 
 #[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+pub struct CatalogInstallationTarget {
+    pub used_by: String,
+    pub scope_kind: String,
+    pub workspace_dir: Option<String>,
+    pub expected_path: String,
+    pub installation: Option<CatalogInstallation>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
 pub struct CatalogItem {
     pub id: String,
     pub source_id: String,
@@ -420,6 +523,7 @@ pub struct CatalogItem {
     pub missing: bool,
     pub updated_at_ms: i64,
     pub installations: Vec<CatalogInstallation>,
+    pub installation_targets: Vec<CatalogInstallationTarget>,
     pub used_by: Vec<String>,
     pub tags: Vec<String>,
 }
@@ -491,6 +595,7 @@ pub fn get_catalog_item(conn: &Connection, skill_id: &str) -> Result<Option<Cata
                     missing: row.get(9)?,
                     updated_at_ms: row.get(10)?,
                     installations: Vec::new(),
+                    installation_targets: Vec::new(),
                     tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(11)?)
                         .unwrap_or_default(),
                     used_by: Vec::new(),
@@ -606,6 +711,7 @@ pub fn list_catalog(conn: &Connection, query: &CatalogQuery) -> Result<CatalogPa
                 missing: row.get(9)?,
                 updated_at_ms: row.get(10)?,
                 installations: Vec::new(),
+                installation_targets: Vec::new(),
                 tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(11)?)
                     .unwrap_or_default(),
                 used_by: Vec::new(),
@@ -832,5 +938,81 @@ mod catalog_tests {
         let page = list_catalog(store.connection(), &CatalogQuery::default()).unwrap();
         assert_eq!(page.completeness.status, "error");
         assert_eq!(page.completeness.updated_at_ms, Some(30));
+    }
+
+    #[test]
+    fn delete_skill_removes_catalog_installations_and_derived_stats() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = LocalSqliteStore::open(dir.path().join("memorph.db")).unwrap();
+        // One catalog row keyed by its hash id, plus an installation and usage.
+        store.connection().execute(
+            "INSERT INTO skill_catalog (id, canonical_name, normalized_name, entry_content_hash,
+             bundle_content_hash, file_count, total_bytes, first_seen_at_ms, last_scanned_at_ms,
+             created_at_ms, updated_at_ms) VALUES ('skill:sha256:aaa', 'Writer', 'writer', 'entry', 'bundle', 1, 100, 1, 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+        store.connection().execute(
+            "INSERT INTO skill_installations (id, skill_id, used_by, scope_kind, install_path,
+             canonical_install_path, install_kind, bundle_content_hash, discovered_at_ms, last_verified_at_ms)
+             VALUES ('install-1', 'skill:sha256:aaa', 'codex', 'global', '/tmp/writer', '/tmp/writer', 'directory', 'bundle', 1, 1)",
+            [],
+        )
+        .unwrap();
+        store.connection().execute(
+            "INSERT INTO skill_usage_daily (usage_date, skill_id, provider_id, workspace_key, invocation_count, session_count, updated_at_ms)
+             VALUES ('2026-08-05', 'skill:sha256:aaa', 'codex', '', 3, 1, 1)",
+            [],
+        )
+        .unwrap();
+        // An unrelated same-named row must survive a per-id delete.
+        store.connection().execute(
+            "INSERT INTO skill_catalog (id, canonical_name, normalized_name, entry_content_hash,
+             bundle_content_hash, file_count, total_bytes, first_seen_at_ms, last_scanned_at_ms,
+             created_at_ms, updated_at_ms) VALUES ('skill:sha256:bbb', 'Writer', 'writer', 'entry2', 'bundle2', 1, 100, 1, 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+
+        // Delete by catalog id — exactly what the per-row UI sends.
+        delete_skill(store.connection_mut(), "skill:sha256:aaa").unwrap();
+
+        let gone: i64 = store
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM skill_catalog WHERE id = 'skill:sha256:aaa'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let installations: i64 = store
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM skill_installations WHERE skill_id = 'skill:sha256:aaa'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let usage: i64 = store
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM skill_usage_daily WHERE skill_id = 'skill:sha256:aaa'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        // The sibling same-named row is untouched — per-row, not per-name.
+        let sibling: i64 = store
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM skill_catalog WHERE id = 'skill:sha256:bbb'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(gone, 0);
+        assert_eq!(installations, 0);
+        assert_eq!(usage, 0);
+        assert_eq!(sibling, 1);
     }
 }

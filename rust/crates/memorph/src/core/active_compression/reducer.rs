@@ -366,7 +366,10 @@ fn command_log_signals(source_events: &[Event]) -> Vec<String> {
     let summary_count = records.iter().filter(|record| record.is_summary).count();
 
     if !commands.is_empty() {
-        push_signal(&mut signals, format!("Command IDs: {}", commands.join(" | ")));
+        push_signal(
+            &mut signals,
+            format!("Command IDs: {}", commands.join(" | ")),
+        );
     }
     if !exit_codes.is_empty() {
         push_signal(

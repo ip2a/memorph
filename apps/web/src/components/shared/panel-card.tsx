@@ -9,8 +9,10 @@ export function PanelCard({ variant = "stack", className, ...props }: PanelCardP
   return (
     <section
       className={cn(
-        variant === "stack" && "flex min-h-0 flex-col gap-4 overflow-hidden rounded-lg border bg-card p-4",
-        variant === "plain" && "min-h-0 overflow-hidden rounded-lg border bg-card p-4",
+        variant === "stack" &&
+          "flex min-h-0 flex-col gap-4 overflow-hidden rounded-lg border border-border/50 bg-card p-4 shadow-xs dark:border-border",
+        variant === "plain" &&
+          "min-h-0 overflow-hidden rounded-lg border border-border/50 bg-card p-4 shadow-xs dark:border-border",
         className,
       )}
       {...props}

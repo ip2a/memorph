@@ -67,7 +67,12 @@ import type {
   SkillMutation,
   SkillCatalogPage,
   SkillCatalogParams,
+  DisabledSkillsPage,
+  SkillGroup,
+  SkillGroupWithMembers,
+  SkillGroupInput,
   SkillScanQueued,
+  SkillAnalysisOperation,
   SkillDailyUsage,
   SkillContext,
   SkillContextSummary,
@@ -81,13 +86,12 @@ import type {
   SkillGraphParams,
   SkillInvocationPage,
   SkillRanking,
-  SkillPrunePreview,
-  SkillPruneResult,
   SkillStatsParams,
   SkillStatsSummary,
   SkillStatsBreakdown,
   SkillsOverview,
   SkillDetail,
+  SkillEntry,
   SkillTree,
   SkillFilePreview,
   SessionStalenessRefreshReport,
@@ -723,6 +727,14 @@ export function getSyncGroup(groupId: string) {
   );
 }
 
+export function getSkillAnalysisOperation(operationId: string) {
+  return api<SkillAnalysisOperation>(`/api/v1/skills/analyze/operations/${operationId}`);
+}
+
+export function getCurrentSkillAnalysis() {
+  return api<SkillAnalysisOperation | null>("/api/v1/skills/analyze/operations/current");
+}
+
 export function getSkills(params: SkillCatalogParams = {}) {
   return api<SkillCatalogPage>(`/api/v1/skills/catalog${buildQuery(params)}`);
 }
@@ -735,7 +747,7 @@ export function scanSkills(mode: "incremental" | "full", workspace?: string) {
 }
 
 export function analyzeSkills(mode: "incremental" | "full" = "incremental") {
-  return api<{ queued: boolean; mode: string }>("/api/v1/skills/analyze", {
+  return api<{ operation_id: string; queued: boolean; joined: boolean; mode: "incremental" | "full" }>("/api/v1/skills/analyze", {
     method: "POST",
     body: JSON.stringify({ mode }),
   });
@@ -794,31 +806,6 @@ export function getSkillCoverageEvidence(
   return api<SkillCoverageEvidencePage>(
     `/api/v1/skills/${encodeURIComponent(skillId)}/coverage/${encodeURIComponent(targetKey)}/evidence${buildQuery({ page, pageSize: 20 })}`,
   );
-}
-
-export function previewSkillPrune(days = 30) {
-  return api<SkillPrunePreview>("/api/v1/skills/prune/preview", {
-    method: "POST",
-    body: JSON.stringify({ days }),
-  });
-}
-export function executeSkillPrune(
-  preview: SkillPrunePreview,
-  installationIds: string[],
-) {
-  return api<SkillPruneResult[]>("/api/v1/skills/prune/execute", {
-    method: "POST",
-    body: JSON.stringify({
-      preview_id: preview.preview_id,
-      items: preview.items
-        .filter((item) => installationIds.includes(item.installation_id))
-        .map((item) => ({
-          installation_id: item.installation_id,
-          expected_fingerprint: item.expected_fingerprint,
-        })),
-      confirmation: "REMOVE_MANAGED_INSTALLATIONS",
-    }),
-  });
 }
 
 export function getSkillGraph(params: SkillGraphParams = {}) {
@@ -905,5 +892,88 @@ export function uninstallSkill(payload: SkillMutation) {
   return api<SkillsOverview>("/api/v1/skills/install", {
     method: "DELETE",
     body: JSON.stringify(payload),
+  });
+}
+
+export function deleteSkill(skillId: string) {
+  return api<SkillsOverview>(
+    `/api/v1/skills/${encodeURIComponent(skillId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export function disableSkill(skillId: string) {
+  return api<SkillsOverview>("/api/v1/skills/disable", {
+    method: "POST",
+    body: JSON.stringify({ skill_id: skillId }),
+  });
+}
+
+export function enableSkill(usedBy: string, directory: string) {
+  return api<SkillsOverview>("/api/v1/skills/enable", {
+    method: "POST",
+    body: JSON.stringify({ used_by: usedBy, directory }),
+  });
+}
+
+export function listDisabledSkills() {
+  return api<DisabledSkillsPage>("/api/v1/skills/disabled");
+}
+
+export function consolidateSkill(canonicalPath: string) {
+  return api<SkillsOverview>("/api/v1/skills/consolidate", {
+    method: "POST",
+    body: JSON.stringify({ canonical_path: canonicalPath }),
+  });
+}
+
+export function getSkillGroupInstallations(sourceId: string) {
+  return api<SkillEntry>(
+    `/api/v1/skills/${encodeURIComponent(sourceId)}/group-installations`,
+  );
+}
+
+export function listSkillGroups() {
+  return api<SkillGroupWithMembers[]>("/api/v1/skills/groups");
+}
+
+export function createSkillGroup(input: SkillGroupInput) {
+  return api<SkillGroup>("/api/v1/skills/groups", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateSkillGroup(groupId: string, input: SkillGroupInput) {
+  return api<SkillGroup>(
+    `/api/v1/skills/groups/${encodeURIComponent(groupId)}`,
+    { method: "PATCH", body: JSON.stringify(input) },
+  );
+}
+
+export function deleteSkillGroup(groupId: string) {
+  return api<null>(`/api/v1/skills/groups/${encodeURIComponent(groupId)}`, {
+    method: "DELETE",
+  });
+}
+
+export function setSkillGroup(skillId: string, groupId: string | null) {
+  return api<null>(
+    `/api/v1/skills/${encodeURIComponent(skillId)}/group`,
+    { method: "PUT", body: JSON.stringify({ group_id: groupId }) },
+  );
+}
+
+export function removeSymlinksSkill(skillId: string) {
+  return api<SkillsOverview>("/api/v1/skills/remove-symlinks", {
+    method: "POST",
+    body: JSON.stringify({ skill_id: skillId }),
+  });
+}
+
+export function deleteSkillInstallation(installPath: string) {
+  return api<SkillsOverview>("/api/v1/skills/installation", {
+    method: "DELETE",
+    body: JSON.stringify({ install_path: installPath }),
   });
 }

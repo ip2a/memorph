@@ -32,7 +32,6 @@ export function AppShellNav({
   const isManager = isRoute(pathname, "/manager")
   const isSkills = isRoute(pathname, "/skills")
   const isAgents = isRoute(pathname, "/agents")
-  const isStats = isRoute(pathname, "/stats")
 
   const entries = React.useMemo<CollapsibleToolbarEntry[]>(() => {
     const next: CollapsibleToolbarEntry[] = []
@@ -66,23 +65,6 @@ export function AppShellNav({
         <DropdownMenuItem onSelect={() => setWorkspaceSwitchOpen(true)}>{t("switchWorkspace")}</DropdownMenuItem>
       ),
     })
-
-    if (!isStats) {
-      next.push({
-        id: "stats",
-        collapsePriority: 10,
-        renderButton: () => (
-          <Button asChild variant="outline">
-            <Link to="/stats">{t("stats")}</Link>
-          </Button>
-        ),
-        renderMenuItem: () => (
-          <DropdownMenuItem asChild>
-            <Link to="/stats">{t("stats")}</Link>
-          </DropdownMenuItem>
-        ),
-      })
-    }
 
     if (STORAGE_NAV_ENABLED) {
       next.push({
@@ -138,34 +120,6 @@ export function AppShellNav({
     if (isManager) {
       next.push(
         {
-          id: "compression",
-          collapsePriority: 20,
-          renderButton: () => (
-            <Button asChild variant="outline">
-              <Link to="/compression">{t("compressSessions")}</Link>
-            </Button>
-          ),
-          renderMenuItem: () => (
-            <DropdownMenuItem asChild>
-              <Link to="/compression">{t("compressSessions")}</Link>
-            </DropdownMenuItem>
-          ),
-        },
-        {
-          id: "sync",
-          collapsePriority: 21,
-          renderButton: () => (
-            <Button asChild variant="outline">
-              <Link to="/sync">{t("syncGroups")}</Link>
-            </Button>
-          ),
-          renderMenuItem: () => (
-            <DropdownMenuItem asChild>
-              <Link to="/sync">{t("syncGroups")}</Link>
-            </DropdownMenuItem>
-          ),
-        },
-        {
           id: "import-session",
           collapsePriority: 22,
           renderButton: () => (
@@ -218,7 +172,6 @@ export function AppShellNav({
     isHome,
     isSkills,
     isManager,
-    isStats,
     navigate,
     onOpenImportSession,
     onOpenSettings,

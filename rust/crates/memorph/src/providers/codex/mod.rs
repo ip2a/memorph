@@ -54,6 +54,11 @@ const CODEX_SYNC_BACKUP_NAMESPACE: &str = "provider-sync";
 const DEFAULT_CODEX_SYNC_BACKUP_KEEP_COUNT: usize = 5;
 const CODEX_SYNC_SESSION_DIRS: &[&str] = &["sessions", "archived_sessions"];
 const CODEX_SQLITE_FILE_BASENAME: &str = "state_5.sqlite";
+
+fn rollout_in_archived_dir(path: &std::path::Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == "archived_sessions")
+}
 const CODEX_GLOBAL_STATE_FILE_BASENAME: &str = ".codex-global-state.json";
 const CODEX_GLOBAL_STATE_BACKUP_FILE_BASENAME: &str = ".codex-global-state.json.bak";
 const CODEX_INTERNAL_DEVELOPER_TAGS: &[&str] = &[
@@ -324,8 +329,8 @@ impl Provider for CodexProvider {
             export_fidelity: ProviderContentFidelity {
                 text: Some(Fidelity::Preserved),
                 thinking: Some(Fidelity::Downgraded),
-                tool_call: Some(Fidelity::Downgraded),
-                tool_result: Some(Fidelity::Downgraded),
+                tool_call: Some(Fidelity::Preserved),
+                tool_result: Some(Fidelity::Preserved),
                 patch: Some(Fidelity::Downgraded),
                 image: Some(Fidelity::Normalized),
                 file: Some(Fidelity::Downgraded),
@@ -392,6 +397,7 @@ impl Provider for CodexProvider {
                 .map(|value| value.timestamp_millis());
 
             sessions.push(ProviderSessionSummary {
+                archived: rollout_in_archived_dir(&path),
                 session_id,
                 title,
                 project_dir,
@@ -466,6 +472,10 @@ impl Provider for CodexProvider {
             );
 
             return Ok(Some(ProviderSessionSummary {
+                archived: source_path
+                    .as_deref()
+                    .map(rollout_in_archived_dir)
+                    .unwrap_or(false),
                 session_id: session_id.to_string(),
                 title,
                 project_dir,

@@ -1,4 +1,5 @@
 pub mod adapter;
+mod cli;
 pub mod hook;
 pub mod load;
 mod management;
@@ -91,21 +92,43 @@ impl Provider for KiroProvider {
     }
 
     fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
+        let mut sessions = Vec::new();
+
+        // IDE source: ~/.kiro/sessions/
         let sessions_root = kiro_sessions_dir()?;
-        if !sessions_root.exists() {
-            return Ok(Vec::new());
+        if sessions_root.exists() {
+            sessions.extend(scan_sessions_in(&sessions_root)?);
         }
-        scan_sessions_in(&sessions_root)
+
+        // CLI source: data_local_dir/kiro-cli/data.sqlite3
+        let cli_sessions = cli::scan_cli_sessions().unwrap_or_default();
+        let ide_ids: std::collections::HashSet<String> =
+            sessions.iter().map(|s| s.session_id.clone()).collect();
+        for cs in cli_sessions {
+            if !ide_ids.contains(&cs.session_id) {
+                sessions.push(cs);
+            }
+        }
+
+        Ok(sessions)
     }
 
     fn find_session_by_id(&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
-        let Some(session_dir) = find_session_dir(session_id)? else {
-            return Ok(None);
-        };
-        session_summary_from_dir(&session_dir).map(Some)
+        // Try IDE source first
+        if let Some(session_dir) = find_session_dir(session_id)? {
+            return session_summary_from_dir(&session_dir).map(Some);
+        }
+        // Fall back to CLI source
+        let cli_sessions = cli::scan_cli_sessions().unwrap_or_default();
+        Ok(cli_sessions
+            .into_iter()
+            .find(|s| s.session_id == session_id))
     }
 
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
+        if let Some(conv_id) = source_path.strip_prefix(cli::CLI_SOURCE_PREFIX) {
+            return cli::import_cli_session(conv_id);
+        }
         import_canonical_session_from_dir(Path::new(source_path))
     }
 
@@ -115,6 +138,48 @@ impl Provider for KiroProvider {
         event_offset: usize,
         event_limit: Option<usize>,
     ) -> Result<ProviderSessionImportPage> {
+        if let Some(conv_id) = source_path.strip_prefix(cli::CLI_SOURCE_PREFIX) {
+            let imported = cli::import_cli_session(conv_id)?;
+            let full_events = imported.session.events.clone();
+            let event_count = full_events.len();
+            let message_count = full_events
+                .iter()
+                .filter(|event| event_is_visible_message(event))
+                .count();
+            let full_turns = crate::session_projection::project_session_turns(
+                &imported.session.identity.id,
+                &full_events,
+                TurnQuality::Exact,
+            );
+            let offset = event_offset.min(event_count);
+            let page_events: Vec<Event> = match event_limit {
+                Some(limit) => full_events
+                    .iter()
+                    .skip(offset)
+                    .take(limit)
+                    .cloned()
+                    .collect(),
+                None => full_events.iter().skip(offset).cloned().collect(),
+            };
+            let turns = crate::session_projection::project_session_turns(
+                &imported.session.identity.id,
+                &page_events,
+                TurnQuality::Inferred,
+            );
+            return Ok(ProviderSessionImportPage {
+                imported: ImportedSession {
+                    session: Session {
+                        events: page_events,
+                        ..imported.session
+                    },
+                    ..imported
+                },
+                event_count,
+                message_count,
+                turn_count: Some(full_turns.len()),
+                turns,
+            });
+        }
         import_kiro_session_page(Path::new(source_path), event_offset, event_limit)
     }
 
@@ -122,6 +187,9 @@ impl Provider for KiroProvider {
         &self,
         source_path: &str,
     ) -> Result<Option<ProviderSourceFingerprint>> {
+        if let Some(conv_id) = source_path.strip_prefix(cli::CLI_SOURCE_PREFIX) {
+            return cli::cli_session_fingerprint(conv_id);
+        }
         kiro_session_source_fingerprint(Path::new(source_path))
     }
 
@@ -185,7 +253,11 @@ impl Provider for KiroProvider {
     }
 
     fn data_source_paths(&self) -> Vec<PathBuf> {
-        kiro_sessions_dir().ok().into_iter().collect()
+        let mut paths: Vec<PathBuf> = kiro_sessions_dir().ok().into_iter().collect();
+        if let Some(db_path) = cli::kiro_cli_db_path() {
+            paths.push(db_path);
+        }
+        paths
     }
 }
 

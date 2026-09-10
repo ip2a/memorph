@@ -357,6 +357,7 @@ pub(crate) fn complete_missing_counts(
             let indexed = store.write_session_summary(
                 &computation.provider_id,
                 &crate::provider::ProviderSessionSummary {
+                    archived: false,
                     session_id: computation
                         .provider_session_id
                         .clone()
@@ -388,7 +389,12 @@ pub(crate) fn complete_missing_counts(
         store.replace_daily_stats(&canonical_session_id, &computation.events)?;
     }
     if !failures.is_empty() {
-        let preview = failures.iter().take(3).cloned().collect::<Vec<_>>().join("; ");
+        let preview = failures
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("; ");
         anyhow::bail!(
             "Failed to complete {} missing message counts: {}",
             failures.len(),
@@ -439,10 +445,8 @@ fn load_event_facts(
              FROM session_daily_stats WHERE session_id IN ({placeholders})"
         );
         let mut stmt = conn.prepare(&sql)?;
-        let params: Vec<&dyn rusqlite::ToSql> = ids
-            .iter()
-            .map(|id| id as &dyn rusqlite::ToSql)
-            .collect();
+        let params: Vec<&dyn rusqlite::ToSql> =
+            ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
         for row in stmt.query_map(rusqlite::params_from_iter(params.iter().copied()), |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -482,10 +486,8 @@ fn load_created_at(
          WHERE deleted_at_ms IS NULL AND id IN ({placeholders})"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<&dyn rusqlite::ToSql> = ids
-        .iter()
-        .map(|id| id as &dyn rusqlite::ToSql)
-        .collect();
+    let params: Vec<&dyn rusqlite::ToSql> =
+        ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
     let values = stmt
         .query_map(rusqlite::params_from_iter(params.iter().copied()), |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
@@ -947,6 +949,7 @@ mod tests {
             size_bytes: Some(size),
             hidden: false,
             pinned: false,
+            archived: false,
             preferred_targets: Vec::new(),
             stale: false,
         }

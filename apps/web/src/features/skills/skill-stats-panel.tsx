@@ -1,5 +1,7 @@
 import { Link } from "react-router-dom";
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, useEffect, type ReactNode } from "react";
+import { RefreshCwIcon } from "lucide-react";
+import { toast } from "sonner";
 import {
   Area,
   AreaChart,
@@ -13,6 +15,8 @@ import {
 } from "recharts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
+import { Progress } from "@/components/ui/progress";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Sheet,
@@ -29,7 +33,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { useSkillInvocations, useSkillStats } from "@/features/skills/queries";
+import { useAnalyzeSkills, useCurrentSkillAnalysis, useSkillAnalysisOperation, useSkillInvocations, useSkillStats } from "@/features/skills/queries";
 import {
   useSkillStatsFilters,
 } from "@/features/skills/skill-stats-filters";
@@ -215,6 +219,53 @@ function StatsPanelSection({
   );
 }
 
+export function SkillStatsAnalyzeButton() {
+  const { t } = useI18n();
+  const analyzeMutation = useAnalyzeSkills();
+  const currentAnalysis = useCurrentSkillAnalysis();
+  const busy =
+    analyzeMutation.isPending ||
+    currentAnalysis.data?.status === "queued" ||
+    currentAnalysis.data?.status === "running";
+
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      disabled={busy}
+      onClick={() =>
+        analyzeMutation.mutate("incremental", {
+          onSuccess: () => toast.success(t("skillsAnalysisRefreshed")),
+          onError: (error) =>
+            toast.error(t("skillsAnalysisRefreshFailed"), {
+              description: error.message,
+            }),
+        })
+      }
+    >
+      {busy ? <Spinner /> : <RefreshCwIcon />}
+      {busy ? t("skillsAnalysisInProgress") : t("skillsRefreshUsageAnalysis")}
+    </Button>
+  );
+}
+
+export function SkillStatsAnalysisProgress({ className }: { className?: string }) {
+  const currentAnalysis = useCurrentSkillAnalysis();
+  const analysis = currentAnalysis.data;
+  if (!analysis || (analysis.status !== "queued" && analysis.status !== "running")) {
+    return null;
+  }
+
+  return (
+    <div className={`flex min-w-0 items-center gap-3 text-xs text-muted-foreground ${className ?? ""}`}>
+      <span className="shrink-0">
+        {analysis.processed_sources}/{analysis.total_sources || "—"} · {analysis.percentage}%
+      </span>
+      <Progress className="min-w-0 flex-1" value={analysis.percentage} />
+    </div>
+  );
+}
+
 export function SkillStatsPanel({
   provider,
   section = "all",
@@ -225,6 +276,18 @@ export function SkillStatsPanel({
   const { t } = useI18n();
   const { params } = useSkillStatsFilters(provider);
   const stats = useSkillStats(params);
+  const currentAnalysis = useCurrentSkillAnalysis();
+  const analysisOperation = useSkillAnalysisOperation(
+    currentAnalysis.data?.operation_id || null,
+  );
+  useEffect(() => {
+    if (analysisOperation.data?.status === "completed") {
+      void stats.summary.refetch();
+      void stats.daily.refetch();
+      void stats.breakdown.refetch();
+      void stats.ranking.refetch();
+    }
+  }, [analysisOperation.data?.status, stats.breakdown, stats.daily, stats.ranking, stats.summary]);
   const openWorkspaceQuickSwitch = useUiStore(
     (state) => state.openWorkspaceQuickSwitch,
   );
@@ -246,6 +309,10 @@ export function SkillStatsPanel({
     [stats.breakdown.data?.workspaces],
   );
   const providerBreakdown = stats.breakdown.data?.providers ?? [];
+
+  const usageHeader = (
+    <h3 className="text-base font-semibold">{t("skillsUsageStats")}</h3>
+  );
 
   const usageMetrics = (
     <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
@@ -280,8 +347,10 @@ export function SkillStatsPanel({
 
   const summarySections = showSummary ? (
     <>
-      <StatsPanelSection borderless={summaryBorderless} title={t("skillsUsageStats")}>
-        {usageMetrics}
+      <StatsPanelSection borderless={summaryBorderless} header={usageHeader}>
+        <div className="grid gap-3">
+          {usageMetrics}
+        </div>
       </StatsPanelSection>
       <StatsPanelSection borderless={summaryBorderless} title={t("skillsDailyInvocations")}>
         <div className="h-44">
@@ -325,6 +394,7 @@ export function SkillStatsPanel({
   return (
     <section
       className={cn(
+        "min-w-0",
         section === "all" && "grid shrink-0 gap-3 xl:grid-cols-2",
         section === "summary" && "shrink-0",
         section === "ranking" && "shrink-0",
@@ -338,14 +408,14 @@ export function SkillStatsPanel({
 
       {showRanking ? (
       <>
-      <div className={section === "all" ? "xl:col-span-2" : undefined}>
-          <Table>
+      <div className={cn("min-w-0", section === "all" && "xl:col-span-2")}>
+          <Table className="table-fixed">
             <TableHeader>
               <TableRow>
-                <TableHead>{t("skillsColumnSkill")}</TableHead>
-                <TableHead>{t("skillsInvocationLabel")}</TableHead>
-                <TableHead>{t("skillsSessionLabel")}</TableHead>
-                <TableHead>{t("skillsRecent")}</TableHead>
+                <TableHead className="w-2/5">{t("skillsColumnSkill")}</TableHead>
+                <TableHead className="w-[18%]">{t("skillsInvocationLabel")}</TableHead>
+                <TableHead className="w-[18%]">{t("skillsSessionLabel")}</TableHead>
+                <TableHead className="w-[27%]">{t("skillsRecent")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -363,10 +433,10 @@ export function SkillStatsPanel({
                     setEvidenceTarget(item);
                   }}
                 >
-                  <TableCell>{item.name}</TableCell>
+                  <TableCell className="truncate">{item.name}</TableCell>
                   <TableCell>{item.invocations}</TableCell>
                   <TableCell>{item.sessions}</TableCell>
-                  <TableCell className="text-xs">
+                  <TableCell className="truncate text-xs">
                     {formatTime(item.last_invoked_at_ms)}
                   </TableCell>
                 </TableRow>

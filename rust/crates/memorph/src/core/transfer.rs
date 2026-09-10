@@ -133,8 +133,9 @@ pub fn import_session(params: &ImportParams, actor: ActivityActor) -> Result<Imp
             );
         }
         let target_dir = target_prov.resolve_workspace_dir(params.to_dir.as_deref())?;
-        let (session, _) =
+        let (mut session, _) =
             session_management::prepare_session_for_target_provider(&session, &params.provider)?;
+        sanitize_before_export(&mut session, &params.provider);
         let exported = target_prov.export_session(&session, &target_dir)?;
 
         Ok((
@@ -300,6 +301,7 @@ pub fn switch_session(params: &SwitchParams) -> Result<SwitchResult> {
             session.identity.title = Some(trimmed.to_string());
         }
     }
+    sanitize_before_export(&mut session, &params.to);
     let exported = target_prov.export_session(&session, &target_dir)?;
 
     let mut removed_original = false;
@@ -327,4 +329,20 @@ pub fn switch_session(params: &SwitchParams) -> Result<SwitchResult> {
         resume_command: exported.resume_command,
         removed_original,
     })
+}
+
+/// Strip tokenizer-hostile control characters from a session right before it
+/// is written to a target provider. Narrow by design (NUL + C0 only); see
+/// the `sanitize` module docs. Logged so every cleaning pass is observable.
+fn sanitize_before_export(session: &mut crate::session::Session, target_provider: &str) {
+    let report = crate::sanitize::sanitize_session(session);
+    if !report.is_clean() {
+        crate::logging::info(
+            "session_sanitize",
+            format!(
+                "Stripped {} tokenizer-hostile control character(s) from {} field(s) before writing to {}",
+                report.control_chars_removed, report.fields_modified, target_provider,
+            ),
+        );
+    }
 }

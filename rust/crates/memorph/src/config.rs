@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::{storage::atomic_write, utils};
 
 pub const DEFAULT_SESSIONS_PER_PROVIDER: usize = 12;
-pub const DEFAULT_SKILLS_CATALOG_PAGE_SIZE: usize = 50;
+pub const DEFAULT_SKILLS_CATALOG_PAGE_SIZE: usize = 20;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -124,13 +124,15 @@ pub struct HomeButtonConfig {
     pub switch: bool,
     #[serde(default = "default_true")]
     pub view: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub compress: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub export: bool,
     #[serde(default = "default_false")]
     pub sync: bool,
-    #[serde(default = "default_false")]
+    #[serde(default = "default_true")]
+    pub rename: bool,
+    #[serde(default = "default_true")]
     pub delete: bool,
 }
 
@@ -139,10 +141,11 @@ impl Default for HomeButtonConfig {
         Self {
             switch: true,
             view: true,
-            compress: true,
-            export: true,
+            compress: false,
+            export: false,
             sync: false,
-            delete: false,
+            rename: true,
+            delete: true,
         }
     }
 }

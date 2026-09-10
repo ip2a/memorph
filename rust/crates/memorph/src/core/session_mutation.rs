@@ -4,7 +4,11 @@ use super::*;
 /// changes its display. No-op for sessions without a workspace (they are not
 /// part of any workspace feed). Logs instead of failing — a stale revision is
 /// preferable to failing a user mutation.
-fn bump_session_workspace_revision(conn: &rusqlite::Connection, provider_id: &str, session_id: &str) {
+fn bump_session_workspace_revision(
+    conn: &rusqlite::Connection,
+    provider_id: &str,
+    session_id: &str,
+) {
     super::projection::bump_feed_revision_for_session(conn, provider_id, session_id);
 }
 
@@ -96,37 +100,39 @@ pub fn delete_sessions(
         .zip(activities)
         .zip(session_ids)
         .zip(workspace_keys)
-        .map(|(((result, activity_id), session_id), workspace_key)| match result {
-            Ok(()) => {
-                ActivityStore::new(&activity_conn).finish(
-                    &activity_id,
-                    ActivityCompletion::success(
-                        "Deleted session",
-                        serde_json::json!({"provider_session_id": session_id}),
-                    ),
-                )?;
-                if let Some(workspace_key) = workspace_key {
-                    let _ = crate::storage::workspace_feed_revision::bump(
-                        &activity_conn,
-                        &workspace_key,
-                        crate::utils::now_ms(),
-                    );
+        .map(
+            |(((result, activity_id), session_id), workspace_key)| match result {
+                Ok(()) => {
+                    ActivityStore::new(&activity_conn).finish(
+                        &activity_id,
+                        ActivityCompletion::success(
+                            "Deleted session",
+                            serde_json::json!({"provider_session_id": session_id}),
+                        ),
+                    )?;
+                    if let Some(workspace_key) = workspace_key {
+                        let _ = crate::storage::workspace_feed_revision::bump(
+                            &activity_conn,
+                            &workspace_key,
+                            crate::utils::now_ms(),
+                        );
+                    }
+                    Ok(())
                 }
-                Ok(())
-            }
-            Err(error) => {
-                let message = format!("{error:#}");
-                ActivityStore::new(&activity_conn).finish(
-                    &activity_id,
-                    ActivityCompletion::failed(
-                        "Failed to delete session",
-                        serde_json::json!({"provider_session_id": session_id}),
-                        &message,
-                    ),
-                )?;
-                Err(error)
-            }
-        })
+                Err(error) => {
+                    let message = format!("{error:#}");
+                    ActivityStore::new(&activity_conn).finish(
+                        &activity_id,
+                        ActivityCompletion::failed(
+                            "Failed to delete session",
+                            serde_json::json!({"provider_session_id": session_id}),
+                            &message,
+                        ),
+                    )?;
+                    Err(error)
+                }
+            },
+        )
         .collect()
 }
 

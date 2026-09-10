@@ -29,8 +29,8 @@ import {
   eventBlockTagClass,
   eventKindTagClass,
   eventRoleTagClass,
-  getBlockTags,
 } from "@/features/sessions/session-block-utils";
+import { getEventHeaderTags } from "@/features/sessions/session-chain-of-thought-utils";
 import { CreateSyncDialog, DeleteSessionDialog, ExportSessionDialog, RenameSessionDialog, SwitchSessionDialog } from "@/features/sessions/actions";
 import { SessionDetailHeaderActions } from "@/features/sessions/session-detail-header-actions";
 import { buildSessionEventQuery, sessionEventTotalPages, type SessionEventPageSize } from "@/features/sessions/session-detail-pagination";
@@ -373,7 +373,7 @@ function DetailEventItem({
   const { t } = useI18n();
   const role = event.role ?? "unknown";
   const kind = event.kind ?? "unknown";
-  const blockTags = getBlockTags(event.blocks, t);
+  const blockTags = getEventHeaderTags(event.blocks, t);
   const blocks = event.blocks ?? [];
 
   return (
@@ -381,7 +381,7 @@ function DetailEventItem({
       <Collapsible open={open} onOpenChange={onOpenChange}>
         <article
           className={cn(
-            "flex min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card",
+            "flex min-h-0 flex-col overflow-hidden rounded-lg border border-border/50 bg-card shadow-xs dark:border-border",
             highlighted && "outline-2 outline-foreground/35 -outline-offset-2",
           )}
           data-event-number={eventNumber}
@@ -393,7 +393,7 @@ function DetailEventItem({
               type="button"
               className="flex w-full shrink-0 items-center justify-between gap-2 border-b px-2.5 py-2 text-left font-mono text-xs transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
             >
-              <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 overflow-hidden">
+              <span className="flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 overflow-hidden whitespace-nowrap text-ellipsis">
                 <span className="shrink-0 tabular-nums text-muted-foreground">#{eventNumber}</span>
                 <Badge variant="outline" className={cn("uppercase", eventRoleTagClass(role))}>
                   {readable(role)}
@@ -667,7 +667,7 @@ export function SessionDetailPage() {
                     index={index}
                     eventNumber={eventNumber}
                     highlighted={highlightedIndex === index}
-                    open={eventOpenById[event.id] ?? true}
+                    open={eventOpenById[event.id] ?? (event.kind !== "lifecycle")}
                     onOpenChange={(open) => setEventOpenById((prev) => ({ ...prev, [event.id]: open }))}
                   />
                 ))

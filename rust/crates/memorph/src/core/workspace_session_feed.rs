@@ -3,7 +3,9 @@ use crate::core::workspace_scan_policy::{self, decide_scan, ScanDecision};
 use crate::core::{projection, session_management};
 use crate::providers;
 use crate::storage::{
-    activity_store::ActivityActor, local_store, snapshot_store::SnapshotStore,
+    activity_store::ActivityActor,
+    local_store,
+    snapshot_store::SnapshotStore,
     workspace_scan_state::{ScanStatus, WorkspaceProviderScanState, WorkspaceScanStateStore},
 };
 use anyhow::{Context as _, Result};
@@ -206,10 +208,12 @@ pub fn workspace_feed_key(workspace_dir: &std::path::Path) -> Option<String> {
 /// * Settled scans converge: a provider with zero sessions reaches `empty`
 ///   and is no longer rescanned every request.
 pub fn workspace_session_feed(params: &WorkspaceSessionFeedParams) -> Result<WorkspaceSessionFeed> {
-    let workspace_dir = params
-        .workspace_dir
-        .canonicalize()
-        .with_context(|| format!("Failed to resolve workspace: {}", params.workspace_dir.display()))?;
+    let workspace_dir = params.workspace_dir.canonicalize().with_context(|| {
+        format!(
+            "Failed to resolve workspace: {}",
+            params.workspace_dir.display()
+        )
+    })?;
     let workspace = workspace_dir.to_string_lossy().to_string();
 
     let provider_ids = if params.providers.is_empty() {
@@ -266,7 +270,10 @@ pub fn workspace_session_feed(params: &WorkspaceSessionFeedParams) -> Result<Wor
             .with_context(|| format!("Failed to read scan state for provider {provider_id}"))?;
         let decision = decide_scan(state.as_ref(), params.refresh, now);
 
-        if matches!(state.as_ref().map(|s| s.status), None | Some(ScanStatus::Unindexed)) {
+        if matches!(
+            state.as_ref().map(|s| s.status),
+            None | Some(ScanStatus::Unindexed)
+        ) {
             any_unindexed = true;
         }
 
@@ -373,7 +380,9 @@ fn provider_message(
         ScanDecision::RetryLater => state
             .and_then(|s| s.last_error.clone())
             .or_else(|| Some("Provider scan failed and is backing off".to_string())),
-        ScanDecision::StartScan => Some("Started scanning provider sessions for workspace".to_string()),
+        ScanDecision::StartScan => {
+            Some("Started scanning provider sessions for workspace".to_string())
+        }
         ScanDecision::JoinScan => Some("Scanning provider sessions for workspace".to_string()),
         ScanDecision::UseCache => None,
     }
@@ -493,7 +502,14 @@ fn complete_workspace_provider_scan(
     let settle_result = match result {
         Ok(_) => {
             let next = now + workspace_scan_policy::scan_ttl_secs(provider_id, new_status) * 1000;
-            store.settle(workspace_key, provider_id, new_status, discovered, next, now)
+            store.settle(
+                workspace_key,
+                provider_id,
+                new_status,
+                discovered,
+                next,
+                now,
+            )
         }
         Err(error) => {
             let next = now + workspace_scan_policy::error_backoff_secs(prev.as_ref()) * 1000;
@@ -548,10 +564,8 @@ mod tests {
         assert_eq!(kind, ProviderFeedStateKind::Scanned);
         assert!(!needs);
 
-        let (kind, needs) = provider_kind_for_decision(
-            &ScanDecision::UseCache,
-            Some(&settled(ScanStatus::Empty)),
-        );
+        let (kind, needs) =
+            provider_kind_for_decision(&ScanDecision::UseCache, Some(&settled(ScanStatus::Empty)));
         assert_eq!(kind, ProviderFeedStateKind::Empty);
         assert!(!needs);
     }

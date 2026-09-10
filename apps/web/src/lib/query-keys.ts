@@ -82,6 +82,8 @@ export const queryKeys = {
   hooks: ["hooks"] as const,
   agentHooks: (provider: string) => ["agents", provider, "hooks"] as const,
   skillsRoot: ["skills"] as const,
+  skillsDisabled: ["skills", "disabled"] as const,
+  skillsGroups: ["skills", "groups"] as const,
   skills: (params: SkillCatalogParams = {}) =>
     ["skills", "catalog", params] as const,
   skillContextSummary: (provider?: string, baseline?: number) =>
@@ -89,7 +91,6 @@ export const queryKeys = {
   skillContext: (id: string, baseline?: number) =>
     ["skills", id, "context", baseline] as const,
   skillHealthSummary: ["skills", "health", "summary"] as const,
-  skillPrune: (days: number) => ["skills", "prune", days] as const,
   skillHealth: (id: string) => ["skills", id, "health"] as const,
   skillConflicts: (id?: string) =>
     ["skills", id ?? "all", "conflicts"] as const,
@@ -112,6 +113,8 @@ export const queryKeys = {
   skillInvocations: (id: string, params: SkillStatsParams = {}) =>
     ["skills", id, "invocations", params] as const,
   skillDetail: (id: string) => ["skills", id, "detail"] as const,
+  skillGroupInstallations: (sourceId: string) =>
+    ["skills", sourceId, "group-installations"] as const,
   skillTree: (id: string) => ["skills", id, "tree"] as const,
   skillFile: (id: string, path: string, usedBy?: string) =>
     ["skills", id, "file", path, usedBy] as const,

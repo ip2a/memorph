@@ -50,9 +50,11 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  variant = "default",
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
+  variant?: "default" | "panel"
 }) {
   const { t } = useI18n()
   return (
@@ -60,8 +62,14 @@ function DialogContent({
       <DialogOverlay />
       <DialogPrimitive.Content
         data-slot="dialog-content"
+        data-variant={variant}
         className={cn(
           "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          variant === "panel" &&
+            cn(
+              "flex flex-col gap-0 overflow-hidden p-0",
+              showCloseButton && "[&_[data-slot=dialog-header]]:pr-12"
+            ),
           className
         )}
         {...props}
@@ -71,7 +79,10 @@ function DialogContent({
           <DialogPrimitive.Close data-slot="dialog-close" asChild>
             <Button
               variant="ghost"
-              className="absolute top-2 right-2"
+              className={cn(
+                "absolute",
+                variant === "panel" ? "top-3 right-3 sm:right-4" : "top-2 right-2"
+              )}
               size="icon-sm"
             >
               <XIcon
@@ -85,11 +96,21 @@ function DialogContent({
   )
 }
 
-function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
+function DialogHeader({
+  className,
+  variant = "default",
+  ...props
+}: React.ComponentProps<"div"> & {
+  variant?: "default" | "bordered"
+}) {
   return (
     <div
       data-slot="dialog-header"
-      className={cn("flex flex-col gap-2", className)}
+      className={cn(
+        "flex flex-col gap-2",
+        variant === "bordered" && "shrink-0 border-b px-4 py-4 sm:px-5",
+        className
+      )}
       {...props}
     />
   )
@@ -97,10 +118,12 @@ function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
 
 function DialogFooter({
   className,
+  variant = "default",
   showCloseButton = false,
   children,
   ...props
 }: React.ComponentProps<"div"> & {
+  variant?: "default" | "bordered"
   showCloseButton?: boolean
 }) {
   const { t } = useI18n()
@@ -108,7 +131,10 @@ function DialogFooter({
     <div
       data-slot="dialog-footer"
       className={cn(
-        "-mx-4 -mb-4 flex flex-col-reverse gap-2 rounded-b-xl border-t bg-muted/50 p-4 sm:flex-row sm:justify-end",
+        "flex flex-col-reverse gap-2 rounded-b-xl border-t sm:flex-row sm:justify-end",
+        variant === "bordered"
+          ? "shrink-0 bg-muted/50 px-4 py-4 sm:px-5"
+          : "-mx-4 -mb-4 bg-muted/50 p-4",
         className
       )}
       {...props}

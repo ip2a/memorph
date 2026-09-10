@@ -36,7 +36,10 @@ pub(super) fn create_codex_session_backup(
             if !index_path.exists() {
                 anyhow::bail!("Codex session index not found");
             }
-            if !codex_index_contains_session(&index_path, session_id)? {
+            // 归档/放出后 Codex 可能没把条目补回 session_index.jsonl,而 rollout
+            // 文件仍在。备份是把整个 index 文件复制走,缺条目不影响备份正确性,
+            // 只要 rollout 在就放行,rename 路径会自愈补条目。
+            if rollout_path.is_none() && !codex_index_contains_session(&index_path, session_id)? {
                 anyhow::bail!("Codex session not found in index: {session_id}");
             }
         }

@@ -17,6 +17,8 @@ pub struct ProviderSessionSummary {
     pub created_at: Option<i64>,
     pub last_active_at: Option<i64>,
     pub source_path: Option<String>,
+    /// Provider-native archive state (Codex archived_sessions/ dir, sqlite archived flags).
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -695,7 +697,7 @@ fn export_block_fidelity(
         Block::Patch { .. } => ("patch", fidelity.patch),
         Block::Image { .. } => ("image", fidelity.image),
         Block::File { .. } => ("file", fidelity.file),
-        Block::Compressed { .. } => ("compressed", fidelity.text),
+        Block::Compressed { .. } => ("compressed", fidelity.compressed),
         Block::Other { .. } => ("other", fidelity.provider_payload),
     }
 }
@@ -853,7 +855,9 @@ pub fn block_text(block: &Block) -> String {
             }
             parts.join("\n")
         }
-        Block::Command { command, argv, cwd, .. } => {
+        Block::Command {
+            command, argv, cwd, ..
+        } => {
             let mut text = command.clone();
             if !argv.is_empty() {
                 text.push('\n');
@@ -1102,6 +1106,48 @@ mod tests {
         assert_eq!(report.issues.len(), 2);
         assert_eq!(report.issues[0].code, "thinking_export_normalized");
         assert_eq!(report.issues[1].code, "tool_call_export_downgraded");
+    }
+
+    #[test]
+    fn export_report_reads_compressed_fidelity_not_text() {
+        let session = Session {
+            lineage: Vec::new(),
+            schema: crate::session::Schema::default(),
+            identity: crate::session::Identity {
+                id: "canonical-2".to_string(),
+                title: None,
+            },
+            context: crate::session::Context::default(),
+            events: vec![test_event(
+                "assistant",
+                crate::session::EventKind::Message,
+                Role::Assistant,
+                vec![Block::Compressed {
+                    raw: serde_json::json!({"summary": "seg"}),
+                }],
+            )],
+            extensions: Default::default(),
+        };
+        let capabilities = ProviderCapabilities {
+            export_fidelity: ProviderContentFidelity {
+                text: Some(Fidelity::Preserved),
+                thinking: None,
+                tool_call: None,
+                tool_result: None,
+                patch: None,
+                image: None,
+                file: None,
+                compressed: Some(Fidelity::Downgraded),
+                provider_payload: None,
+            },
+            ..ProviderCapabilities::default()
+        };
+        let report = export_report("target", &session, capabilities);
+        // If export_block_fidelity wrongly read fidelity.text (Preserved),
+        // no issue would be emitted. With the fix it reads fidelity.compressed
+        // (Downgraded) and emits a warning.
+        assert_eq!(report.issues.len(), 1);
+        assert_eq!(report.issues[0].code, "compressed_export_downgraded");
     }
 
     #[test]

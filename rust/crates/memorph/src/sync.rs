@@ -815,6 +815,7 @@ mod tests {
             size_bytes: None,
             hidden: false,
             pinned: false,
+            archived: false,
             preferred_targets: Vec::new(),
             stale: false,
         }

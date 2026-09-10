@@ -1,5 +1,8 @@
-use crate::provider::{Provider, ProviderCapabilities, ProviderSessionSummary};
+use crate::provider::{
+    Provider, ProviderCapabilities, ProviderContentFidelity, ProviderSessionSummary,
+};
 use crate::providers::generic_json::{self, JsonProviderSpec};
+use crate::session::Fidelity;
 use crate::session::ImportedSession;
 use anyhow::Result;
 use std::path::PathBuf;
@@ -71,6 +74,14 @@ impl Provider for AugmentProvider {
         ProviderCapabilities {
             scan: true,
             import: true,
+            import_fidelity: ProviderContentFidelity {
+                text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Preserved),
+                tool_call: Some(Fidelity::Preserved),
+                tool_result: Some(Fidelity::Preserved),
+                provider_payload: Some(Fidelity::Preserved),
+                ..ProviderContentFidelity::unknown()
+            },
             ..ProviderCapabilities::default()
         }
     }

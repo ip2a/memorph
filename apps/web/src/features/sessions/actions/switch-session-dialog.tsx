@@ -1,20 +1,19 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { FolderOpenIcon } from "lucide-react";
 import { useEffect } from "react";
-import { useForm, useWatch } from "react-hook-form";
+import { Controller, useForm, useWatch } from "react-hook-form";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { DialogForm, DialogFormFooter } from "@/components/shared/dialog-form";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { SessionActionTarget } from "@/features/sessions/session-action-target";
-import { defaultSwitchTarget, switchSchema, workspaceOptions } from "@/features/sessions/model/schemas";
+import { TargetAgentPicker } from "@/features/sessions/actions/target-agent-picker";
+import { defaultSwitchTarget, switchSchema } from "@/features/sessions/model/schemas";
 import type { SwitchForm } from "@/features/sessions/model/schemas";
+import { WorkspacePathPicker } from "@/features/workspaces/workspace-path-picker";
 import { nativeForkSession, switchSession } from "@/lib/api";
 import { useI18n } from "@/lib/i18n-context";
 import { queryKeys } from "@/lib/query-keys";
@@ -100,31 +99,30 @@ export function SwitchSessionDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl" data-switch-session-dialog>
-        <DialogHeader>
+      <DialogContent
+        className="flex! h-[min(34rem,calc(100dvh-2rem))] w-full flex-col gap-4 overflow-hidden sm:max-w-xl"
+        data-switch-session-dialog
+      >
+        <DialogHeader className="shrink-0">
           <DialogTitle>{t("switch")}</DialogTitle>
-          <DialogDescription>{t("switchDialogDescription")}</DialogDescription>
         </DialogHeader>
-        <DialogForm onSubmit={form.handleSubmit((values) => submitSwitch(values, false))}>
+        <DialogForm className="flex min-h-0 min-w-0 flex-1 flex-col" onSubmit={form.handleSubmit((values) => submitSwitch(values, false))}>
           <input type="hidden" name="from" value={target?.providerId || ""} />
           <input type="hidden" name="session_id" value={target?.sessionId || ""} />
-          <FieldGroup className="grid gap-4 sm:grid-cols-[minmax(0,0.75fr)_minmax(0,1.25fr)]" data-switch-modal-grid>
-            <Field data-invalid={Boolean(form.formState.errors.to)}>
-              <FieldLabel htmlFor="switch-target-provider">{t("sessionTargetProvider")}</FieldLabel>
-              <Select value={selectedTarget} onValueChange={(value) => form.setValue("to", value, { shouldValidate: true })}>
-                <SelectTrigger id="switch-target-provider" className="w-full" aria-invalid={Boolean(form.formState.errors.to)}>
-                  <SelectValue placeholder={t("provider")} />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    {exportProviders.map((provider) => (
-                      <SelectItem key={provider.id} value={provider.id}>
-                        {provider.name}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
+          <FieldGroup className="flex min-h-0 flex-1 flex-col gap-4" data-switch-modal-grid>
+            <Field className="flex min-h-0 flex-1 flex-col" data-invalid={Boolean(form.formState.errors.to)}>
+              <FieldLabel>{t("sessionTargetAgent")}</FieldLabel>
+              <Controller
+                control={form.control}
+                name="to"
+                render={({ field }) => (
+                  <TargetAgentPicker
+                    providers={exportProviders}
+                    value={field.value}
+                    onChange={(providerId) => field.onChange(providerId)}
+                  />
+                )}
+              />
               {form.formState.errors.to ? <FieldDescription>{form.formState.errors.to.message}</FieldDescription> : null}
             </Field>
 
@@ -134,28 +132,25 @@ export function SwitchSessionDialog({
               {form.formState.errors.target_title ? <FieldDescription>{form.formState.errors.target_title.message}</FieldDescription> : null}
             </Field>
 
-            <Field className="sm:col-span-2">
+            <Field>
               <FieldLabel htmlFor="switch-target-dir">{t("sessionTargetDirectory")}</FieldLabel>
-              <InputGroup>
-                <InputGroupInput id="switch-target-dir" list="known-workspaces" placeholder={t("sessionWorkspacePath")} {...form.register("to_dir")} />
-                <InputGroupAddon align="inline-end">
-                  <InputGroupButton type="button" variant="ghost" disabled>
-                    <FolderOpenIcon data-icon="inline-start" />
-                    {t("sessionBrowse")}
-                  </InputGroupButton>
-                </InputGroupAddon>
-              </InputGroup>
-              <FieldDescription>{t("sessionCopyTitleDescription")}</FieldDescription>
+              <Controller
+                control={form.control}
+                name="to_dir"
+                render={({ field }) => (
+                  <WorkspacePathPicker
+                    id="switch-target-dir"
+                    value={field.value ?? ""}
+                    onChange={field.onChange}
+                    placeholder={t("sessionWorkspacePath")}
+                  />
+                )}
+              />
             </Field>
           </FieldGroup>
 
-          <datalist id="known-workspaces">
-            {workspaceOptions(meta).map((item) => (
-              <option key={item.path} value={item.path} />
-            ))}
-          </datalist>
-
           <DialogFormFooter
+            className="shrink-0"
             onCancel={() => onOpenChange(false)}
             cancelLabel={t("cancel")}
             submitDisabled={!target || !exportProviders.length}

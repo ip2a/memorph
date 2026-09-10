@@ -33,13 +33,14 @@ export function getBlockLabel(block: EventBlock, t?: Translator): string {
 }
 
 export type SessionBlockTag = {
-  type: EventBlock["type"];
+  /** Block kind, or the synthetic "chain" header chip from getEventHeaderTags. */
+  type: EventBlock["type"] | "chain";
   label: string;
 };
 
 export function getBlockTags(blocks: EventBlock[] | undefined, t?: Translator): SessionBlockTag[] {
   return (blocks ?? [])
-    .map((block) => {
+    .map((block): SessionBlockTag | null => {
       const label = getBlockLabel(block, t);
       return label ? { type: block.type, label } : null;
     })
@@ -85,6 +86,7 @@ export function eventKindTagClass(kind: string | null | undefined) {
 /** Block content tags (text is omitted — it is the body, not a header chip). */
 export function eventBlockTagClass(type: EventBlock["type"] | string) {
   switch (type) {
+    case "chain":
     case "thinking":
       return "border-transparent bg-[#c8bdd9]/55 text-foreground dark:bg-[#5f5470]/55";
     case "tool_call":

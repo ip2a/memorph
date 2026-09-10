@@ -15,6 +15,7 @@ import {
   clampSkillsCatalogPageSize,
   DEFAULT_SKILLS_CATALOG_PAGE_SIZE,
 } from "@/features/skills/skills-catalog-page-size";
+import { skillUsedByLabel } from "@/features/skills/skill-used-by-label";
 import { useI18n } from "@/lib/i18n-context";
 
 export type SkillsCatalogSort = "name" | "size" | "files" | "updated";
@@ -107,7 +108,7 @@ export function SkillsCatalogFiltersDialog({
               <option value="all">{t("skillsAllUsedBy")}</option>
               {usedBy.map((value) => (
                 <option key={value} value={value}>
-                  {value}
+                  {skillUsedByLabel(value, t)}
                 </option>
               ))}
             </select>

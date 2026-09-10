@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   analyzeSkills,
+  getSkillAnalysisOperation,
+  getCurrentSkillAnalysis,
   getSkillContext,
   getSkillContextSummary,
   getSkillHealth,
@@ -20,16 +22,28 @@ import {
   getSkillStatsRanking,
   getSkillStatsSummary,
   installSkill,
-  previewSkillPrune,
-  executeSkillPrune,
   scanSkills,
   uninstallSkill,
+  deleteSkill,
+  disableSkill,
+  enableSkill,
+  listDisabledSkills,
+  consolidateSkill,
+  removeSymlinksSkill,
+  getSkillGroupInstallations,
+  listSkillGroups,
+  createSkillGroup,
+  updateSkillGroup,
+  deleteSkillGroup,
+  setSkillGroup,
+  deleteSkillInstallation,
   updateSkillFile,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 import type {
   SkillCatalogParams,
   SkillGraphParams,
+  SkillGroupInput,
   SkillStatsParams,
 } from "@/lib/types";
 
@@ -59,6 +73,29 @@ export function useAnalyzeSkills() {
       analyzeSkills(mode),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+  });
+}
+
+export function useSkillAnalysisOperation(operationId: string | null) {
+  return useQuery({
+    queryKey: ["skills", "analysis-operation", operationId],
+    queryFn: () => getSkillAnalysisOperation(operationId as string),
+    enabled: Boolean(operationId),
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "queued" || status === "running" ? 1500 : false;
+    },
+  });
+}
+
+export function useCurrentSkillAnalysis() {
+  return useQuery({
+    queryKey: ["skills", "analysis-operation", "current"],
+    queryFn: getCurrentSkillAnalysis,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "queued" || status === "running" ? 1500 : false;
+    },
   });
 }
 
@@ -145,27 +182,6 @@ export function useSkillCoverageEvidence(
     queryFn: () =>
       getSkillCoverageEvidence(skillId as string, targetKey as string, page),
     enabled: Boolean(skillId && targetKey),
-  });
-}
-
-export function useSkillPrune(days: number) {
-  return useQuery({
-    queryKey: queryKeys.skillPrune(days),
-    queryFn: () => previewSkillPrune(days),
-  });
-}
-export function useExecuteSkillPrune() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      preview,
-      installationIds,
-    }: {
-      preview: import("@/lib/types").SkillPrunePreview;
-      installationIds: string[];
-    }) => executeSkillPrune(preview, installationIds),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
   });
 }
 
@@ -276,8 +292,9 @@ export function useInstallSkill() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: installSkill,
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot });
+    },
   });
 }
 
@@ -285,6 +302,124 @@ export function useUninstallSkill() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: uninstallSkill,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot });
+    },
+  });
+}
+
+export function useDeleteSkill() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteSkill,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+  });
+}
+
+export function useDisableSkill() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: disableSkill,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+  });
+}
+
+export function useEnableSkill() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ usedBy, directory }: { usedBy: string; directory: string }) =>
+      enableSkill(usedBy, directory),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+  });
+}
+
+export function useConsolidateSkill() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: consolidateSkill,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+  });
+}
+
+export function useRemoveSymlinksSkill() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: removeSymlinksSkill,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+  });
+}
+
+export function useDeleteSkillInstallation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteSkillInstallation,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+  });
+}
+
+export function useDisabledSkills() {
+  return useQuery({
+    queryKey: queryKeys.skillsDisabled,
+    queryFn: listDisabledSkills,
+  });
+}
+
+export function useSkillGroupInstallations(sourceId: string | null) {
+  return useQuery({
+    queryKey: sourceId
+      ? queryKeys.skillGroupInstallations(sourceId)
+      : ["skills", "group-installations", "none"],
+    queryFn: () => getSkillGroupInstallations(sourceId as string),
+    enabled: Boolean(sourceId),
+  });
+}
+
+export function useSkillGroups() {
+  return useQuery({
+    queryKey: queryKeys.skillsGroups,
+    queryFn: listSkillGroups,
+  });
+}
+
+export function useCreateSkillGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: createSkillGroup,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+  });
+}
+
+export function useUpdateSkillGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ groupId, input }: { groupId: string; input: SkillGroupInput }) =>
+      updateSkillGroup(groupId, input),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+  });
+}
+
+export function useDeleteSkillGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteSkillGroup,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+  });
+}
+
+export function useSetSkillGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ skillId, groupId }: { skillId: string; groupId: string | null }) =>
+      setSkillGroup(skillId, groupId),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
   });

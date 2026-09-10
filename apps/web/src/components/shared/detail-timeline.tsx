@@ -236,7 +236,7 @@ export function DetailTimeline({
       aria-label={t("eventMinimap")}
       data-detail-timeline
     >
-      <div className={cn("sticky top-4 z-10 w-10 rounded-md border bg-muted/20 p-1", TRACK_HEIGHT_CLASS)}>
+      <div className={cn("sticky top-4 z-10 w-10 rounded-sm border bg-muted/20 p-1", TRACK_HEIGHT_CLASS)}>
         <div
           ref={trackRef}
           className="relative h-full w-full cursor-pointer overflow-hidden rounded-sm bg-background/70"

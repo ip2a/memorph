@@ -13,7 +13,6 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldContent, FieldDescription, FieldGroup, FieldLegend, FieldSet, FieldTitle } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { InputGroup, InputGroupAddon } from "@/components/ui/input-group";
 import { ScrollPane } from "@/components/shared/scroll-pane";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -35,15 +34,14 @@ import { cn } from "@/lib/utils";
 import type { HomeSessionLayout, ProviderCatalogEntry, SettingsPayload, UiLanguage, UpdateCheckPayload, UpdateSettingsPayload } from "@/lib/types";
 import { AgentOrderList } from "@/features/settings/agent-order-list";
 import { IndexSettingsPanel } from "@/features/settings/index-settings-panel";
-import { SkillsStatsCustomRangePreferenceField } from "@/features/settings/skills-stats-custom-range-preference-field";
 import { SkillsCatalogPageSizeField } from "@/features/settings/skills-catalog-page-size-field";
+import { CustomRangePreferenceField } from "@/features/settings/custom-range-preference-field";
 import { clampSkillsCatalogPageSize } from "@/features/skills/skills-catalog-page-size";
 
 const SECTIONS = [
   { id: "general", labelKey: "general" },
   { id: "index", labelKey: "indexSection" },
   { id: "display", labelKey: "display" },
-  { id: "skills", labelKey: "skills" },
   { id: "order", labelKey: "order" },
   { id: "config", labelKey: "configFile" },
   { id: "about", labelKey: "about" },
@@ -58,6 +56,7 @@ const HOME_BUTTONS = [
   ["switch", "homeButtonSwitch"],
   ["export", "export"],
   ["sync", "sync"],
+  ["rename", "rename"],
   ["delete", "homeButtonDelete"],
 ] as const;
 
@@ -89,10 +88,11 @@ function defaultDraft(settings: SettingsPayload | undefined, catalog: ProviderCa
     },
     home_buttons: {
       view: settings?.home_buttons?.view !== false,
-      compress: settings?.home_buttons?.compress !== false,
+      compress: settings?.home_buttons?.compress === true,
       switch: settings?.home_buttons?.switch !== false,
-      export: settings?.home_buttons?.export !== false,
-      sync: settings?.home_buttons?.sync !== false,
+      export: settings?.home_buttons?.export === true,
+      sync: settings?.home_buttons?.sync === true,
+      rename: settings?.home_buttons?.rename !== false,
       delete: settings?.home_buttons?.delete !== false,
     },
     home_session_layout: settings?.home_session_layout ?? "tabs",
@@ -255,8 +255,8 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="flex h-[min(70dvh,640px)] flex-col gap-0 p-0 sm:max-w-3xl" data-settings-dialog>
-        <DialogHeader className="flex-row items-center border-b px-4 py-2.5 sm:px-5">
+      <DialogContent variant="panel" className="h-[min(70dvh,640px)] sm:max-w-3xl" data-settings-dialog>
+        <DialogHeader variant="bordered" className="flex-row items-center">
           <DialogTitle className="flex-1">{t("settings")}</DialogTitle>
         </DialogHeader>
 
@@ -283,40 +283,55 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
               {draft && section === "general" ? (
                 <section className="flex flex-col gap-4" data-settings-section="general">
                   <SectionHead title={t("general")} />
-                  <div className="divide-y" data-settings-general-rows>
-                    <SettingsRow title={t("language")}>
+                  <FieldGroup data-settings-general-rows>
+                    <Field orientation="responsive">
+                      <FieldContent><FieldTitle>{t("language")}</FieldTitle></FieldContent>
                       <Select value={draft.language} onValueChange={(value) => patchDraft({ language: value as UiLanguage })}>
                         <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
                         <SelectContent><SelectGroup><SelectItem value="zh">{t("languageNativeZh")}</SelectItem><SelectItem value="en">{t("languageNativeEn")}</SelectItem><SelectItem value="auto">{t("auto")}</SelectItem></SelectGroup></SelectContent>
                       </Select>
-                    </SettingsRow>
-                    <SettingsRow title={t("backupDir")}>
+                    </Field>
+                    <Field orientation="responsive">
+                      <FieldContent><FieldTitle>{t("backupDir")}</FieldTitle><FieldDescription>{t("backupDirHint")}</FieldDescription></FieldContent>
                       <SettingsPathValue
                         value={`${SETTINGS_WORKSPACE_TOKEN}/${formatSettingsPathSuffix(settingsPaths?.backup_dir_input || "./backups")}`}
                       />
-                    </SettingsRow>
-                    <SettingsRow title={t("exportDir")}>
+                    </Field>
+                    <Field orientation="responsive">
+                      <FieldContent><FieldTitle>{t("exportDir")}</FieldTitle><FieldDescription>{t("exportDirHint")}</FieldDescription></FieldContent>
                       <SettingsPathValue value={SETTINGS_EXPORT_DIR_VALUE} />
-                    </SettingsRow>
-                    <SettingsRow title={t("webPort")}>
+                    </Field>
+                  </FieldGroup>
+                  <SectionHead title={t("defaultPortsSection")} />
+                  <FieldGroup>
+                    <Field orientation="responsive">
+                      <FieldContent><FieldTitle>{t("webPort")}</FieldTitle><FieldDescription>{t("webPortHint")}</FieldDescription></FieldContent>
                       <Input className="w-32" type="number" min={1} max={65535} value={draft.server.web_port} onChange={(event) => patchDraft({ server: { ...draft.server, web_port: Number(event.target.value || 0) } })} aria-label={t("webPort")} />
-                    </SettingsRow>
-                    <SettingsRow title={t("apiPort")}>
+                    </Field>
+                    <Field orientation="responsive">
+                      <FieldContent><FieldTitle>{t("apiPort")}</FieldTitle><FieldDescription>{t("apiPortHint")}</FieldDescription></FieldContent>
                       <Input className="w-32" type="number" min={1} max={65535} value={draft.server.api_port} onChange={(event) => patchDraft({ server: { ...draft.server, api_port: Number(event.target.value || 0) } })} aria-label={t("apiPort")} />
-                    </SettingsRow>
-                    <SettingsRow title={t("logDir")}>
+                    </Field>
+                  </FieldGroup>
+                  <SectionHead title={t("logConfigSection")} />
+                  <FieldGroup>
+                    <Field orientation="responsive">
+                      <FieldContent><FieldTitle>{t("logDir")}</FieldTitle><FieldDescription>{t("logDirHint")}</FieldDescription></FieldContent>
                       <SettingsValueText value={settingsPaths?.log_dir || "~/.memorph/logs"} />
-                    </SettingsRow>
-                    <SettingsRow title={t("logFileName")}>
+                    </Field>
+                    <Field orientation="responsive">
+                      <FieldContent><FieldTitle>{t("logFileName")}</FieldTitle></FieldContent>
                       <SettingsValueText value={settingsPaths?.log_file_name || "memorph.log"} />
-                    </SettingsRow>
-                    <SettingsRow title={t("logMaxSizeMb")}>
+                    </Field>
+                    <Field orientation="responsive">
+                      <FieldContent><FieldTitle>{t("logMaxSizeMb")}</FieldTitle><FieldDescription>{t("logMaxSizeMbHint")}</FieldDescription></FieldContent>
                       <Input className="w-32" value={logSizeMb(draft)} inputMode="decimal" onChange={(event) => patchDraft({ logging: { ...draft.logging, max_size_bytes: Math.max(0, Number(event.target.value || 0) * 1024 * 1024) } })} aria-label={t("logMaxSizeMb")} />
-                    </SettingsRow>
-                    <SettingsRow title={t("logRetentionDays")}>
+                    </Field>
+                    <Field orientation="responsive">
+                      <FieldContent><FieldTitle>{t("logRetentionDays")}</FieldTitle><FieldDescription>{t("logRetentionDaysHint")}</FieldDescription></FieldContent>
                       <Input className="w-32" value={draft.logging.retention_days ?? ""} inputMode="numeric" placeholder={t("unlimited")} onChange={(event) => patchDraft({ logging: { ...draft.logging, retention_days: event.target.value === "" ? null : Math.max(0, Number(event.target.value)) } })} aria-label={t("logRetentionDays")} />
-                    </SettingsRow>
-                  </div>
+                    </Field>
+                  </FieldGroup>
                 </section>
               ) : null}
 
@@ -371,19 +386,15 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
                       </div>
                     </FieldSet>
                   </FieldGroup>
-                </section>
-              ) : null}
-
-              {draft && section === "skills" ? (
-                <section className="flex flex-col gap-4" data-settings-section="skills">
+                  <SectionHead title={t("timeRangeSection")} />
+                  <CustomRangePreferenceField />
                   <SectionHead title={t("skills")} />
-                  <SkillsCatalogPageSizeField
-                    value={draft.skills_catalog_page_size}
-                    onChange={(next) =>
-                      patchDraft({ skills_catalog_page_size: next })
-                    }
-                  />
-                  <SkillsStatsCustomRangePreferenceField />
+                  <FieldGroup>
+                    <SkillsCatalogPageSizeField
+                      value={draft.skills_catalog_page_size}
+                      onChange={(next) => patchDraft({ skills_catalog_page_size: next })}
+                    />
+                  </FieldGroup>
                 </section>
               ) : null}
 
@@ -440,7 +451,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
           </ScrollPane>
         </div>
 
-        <DialogFooter className="-mx-0 -mb-0 gap-2 border-t px-4 py-2.5 sm:px-5">
+        <DialogFooter variant="bordered" className="gap-2">
           <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>
             {t("cancel")}
           </Button>
@@ -493,13 +504,7 @@ function SettingsRow({ title, children }: { title: string; children: ReactNode }
 }
 
 function SettingsPathValue({ value }: { value: string }) {
-  return (
-    <InputGroup className="h-8 w-auto shrink-0 opacity-100" aria-readonly="true">
-      <InputGroupAddon align="inline-start" className="pointer-events-none px-3 font-mono text-xs text-foreground">
-        {value}
-      </InputGroupAddon>
-    </InputGroup>
-  );
+  return <SettingsValueText value={value} />;
 }
 
 function SettingsValueText({ value }: { value: string }) {

@@ -90,6 +90,7 @@ impl Provider for WindsurfProvider {
                 let steps = decode_steps(&blob);
                 let source = locator(&db, workspace);
                 out.push(ProviderSessionSummary {
+                    archived: false,
                     session_id: trajectory,
                     title: steps
                         .iter()
@@ -112,6 +113,7 @@ impl Provider for WindsurfProvider {
             {
                 for (id, title, last_active_at) in legacy_sessions(&path)? {
                     out.push(ProviderSessionSummary {
+                        archived: false,
                         session_id: id.clone(),
                         title,
                         project_dir: None,
@@ -652,10 +654,12 @@ fn map_step(step: &Step, i: usize, r: &mut MappingReport) -> Option<Event> {
     } else {
         Role::Assistant
     };
-    let kind = if step.tools.is_empty() {
-        EventKind::Message
-    } else {
+    let kind = if blocks.iter().any(|b| matches!(b, Block::ToolResult { .. })) {
+        EventKind::Observation
+    } else if blocks.iter().any(|b| matches!(b, Block::ToolCall { .. })) {
         EventKind::Action
+    } else {
+        EventKind::Message
     };
     r.push_issue(crate::session::MappingIssue {
         level: crate::session::MappingIssueLevel::Info,
@@ -767,5 +771,25 @@ message:{source: CHAT_MESSAGE_SOURCE_USER conversation_id: "other" intent:{text:
             decoded.tools[0].input,
             Some(serde_json::json!({"path":"x"}))
         );
+    }
+    #[test]
+    fn step_with_tool_result_is_observation() {
+        let mut report = MappingReport::new("windsurf", crate::session::MappingDirection::Import);
+        let step = Step {
+            id: Some(1),
+            timestamp: None,
+            user_text: None,
+            visible: None,
+            thinking: None,
+            tools: vec![Tool {
+                id: "t1".into(),
+                name: "read".into(),
+                input: Some(serde_json::json!({})),
+                result: Some("file contents".into()),
+            }],
+            provider: None,
+        };
+        let event = map_step(&step, 0, &mut report).expect("event");
+        assert_eq!(event.kind, crate::session::EventKind::Observation);
     }
 }

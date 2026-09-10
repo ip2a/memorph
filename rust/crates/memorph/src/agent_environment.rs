@@ -63,6 +63,7 @@ fn detect_provider_environment_uncached(
     let executable_path = find_executable_path(
         crate::providers::environment_profiles::executable_candidates(provider_id),
     )
+    .or_else(|| find_bundled_executable_path(provider_id))
     .map(|path| path.canonicalize().unwrap_or(path));
     let executable_dir = executable_path
         .as_ref()
@@ -147,6 +148,39 @@ fn executable_suffixes() -> Vec<&'static str> {
     }
 }
 
+fn find_bundled_executable_path(provider_id: &str) -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        if crate::providers::canonical_provider_id(provider_id) != "cursor" {
+            return None;
+        }
+        let mut app_paths = vec![PathBuf::from("/Applications/Cursor.app")];
+        if let Some(home) = dirs::home_dir() {
+            app_paths.push(home.join("Applications/Cursor.app"));
+        }
+        return find_cursor_app_executable_path(app_paths);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = provider_id;
+        None
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn find_cursor_app_executable_path(
+    app_paths: impl IntoIterator<Item = PathBuf>,
+) -> Option<PathBuf> {
+    for app_path in app_paths {
+        let executable_path = app_path.join("Contents/Resources/app/bin/cursor");
+        if executable_path.is_file() {
+            return Some(executable_path);
+        }
+    }
+    None
+}
+
 pub(crate) fn provider_config_path(provider_id: &str) -> PathBuf {
     crate::providers::environment_profiles::config_path(provider_id)
 }
@@ -223,6 +257,19 @@ mod tests {
             "cargo"
         );
         assert_eq!(detect_install_method(None), "unknown");
+    }
+
+    #[test]
+    fn finds_cursor_cli_inside_application_bundle() {
+        let app_path = tempfile::tempdir().unwrap().path().join("Cursor.app");
+        let executable_path = app_path.join("Contents/Resources/app/bin/cursor");
+        std::fs::create_dir_all(executable_path.parent().unwrap()).unwrap();
+        std::fs::write(&executable_path, b"#!/bin/sh\n").unwrap();
+
+        assert_eq!(
+            find_cursor_app_executable_path([app_path]),
+            Some(executable_path)
+        );
     }
 
     #[test]

@@ -1,4 +1,6 @@
-use crate::provider_config::{entry_metadata, user_visible, ConfigRow, ConfigSource, ConfigTone, ConfigView};
+use crate::provider_config::{
+    entry_metadata, user_visible, ConfigRow, ConfigSource, ConfigTone, ConfigView,
+};
 use crate::provider_settings::{SettingDefinition, SettingKind, SettingScope};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
@@ -123,8 +125,20 @@ fn mcp(home: &Path) -> ConfigView {
             secret_rows(&mut rows, cfg, "environment", "Environment");
             secret_rows(&mut rows, cfg, "env", "Environment");
             secret_rows(&mut rows, cfg, "headers", "Headers");
-            let source_name = source.file_name().and_then(|n| n.to_str()).unwrap_or("config.json");
-            view.push_entry_section(name, rows, entry_metadata("opencode", "view_mcp", &format!("source:{source_name}:{name}"), cfg));
+            let source_name = source
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("config.json");
+            view.push_entry_section(
+                name,
+                rows,
+                entry_metadata(
+                    "opencode",
+                    "view_mcp",
+                    &format!("source:{source_name}:{name}"),
+                    cfg,
+                ),
+            );
         }
     }
     if view.sections.is_empty() {
@@ -136,17 +150,57 @@ fn mcp(home: &Path) -> ConfigView {
 pub(crate) fn remove_mcp(entry_id: &str, expected: &str) -> anyhow::Result<super::RemovalReport> {
     let home = crate::config::effective_home_dir()?;
     let paths = config_paths(&home);
-    let Some((path, root)) = first(&paths) else { return Ok(super::RemovalReport::already_absent("opencode", "view_mcp", entry_id)); };
+    let Some((path, root)) = first(&paths) else {
+        return Ok(super::RemovalReport::already_absent(
+            "opencode", "view_mcp", entry_id,
+        ));
+    };
     let text = std::fs::read_to_string(&path)?;
-    let source_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("config.json");
-    let Some(servers) = root.get("mcp").and_then(Value::as_object) else { return Ok(super::RemovalReport::already_absent("opencode", "view_mcp", entry_id)); };
-    let found = servers.iter().find(|(name, cfg)| entry_metadata("opencode", "view_mcp", &format!("source:{source_name}:{name}"), cfg).entry_id == entry_id).map(|(name, cfg)| (name.clone(), cfg.clone()));
-    let Some((name, cfg)) = found else { return Ok(super::RemovalReport::already_absent("opencode", "view_mcp", entry_id)); };
-    if entry_metadata("opencode", "view_mcp", &format!("source:{source_name}:{name}"), &cfg).fingerprint != expected { return Err(super::RemovalError::Conflict.into()); }
-    let updated = crate::hooks::config_formats::jsonc::delete_nested_object_key(&text, "mcp", &name)?;
+    let source_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("config.json");
+    let Some(servers) = root.get("mcp").and_then(Value::as_object) else {
+        return Ok(super::RemovalReport::already_absent(
+            "opencode", "view_mcp", entry_id,
+        ));
+    };
+    let found = servers
+        .iter()
+        .find(|(name, cfg)| {
+            entry_metadata(
+                "opencode",
+                "view_mcp",
+                &format!("source:{source_name}:{name}"),
+                cfg,
+            )
+            .entry_id
+                == entry_id
+        })
+        .map(|(name, cfg)| (name.clone(), cfg.clone()));
+    let Some((name, cfg)) = found else {
+        return Ok(super::RemovalReport::already_absent(
+            "opencode", "view_mcp", entry_id,
+        ));
+    };
+    if entry_metadata(
+        "opencode",
+        "view_mcp",
+        &format!("source:{source_name}:{name}"),
+        &cfg,
+    )
+    .fingerprint
+        != expected
+    {
+        return Err(super::RemovalError::Conflict.into());
+    }
+    let updated =
+        crate::hooks::config_formats::jsonc::delete_nested_object_key(&text, "mcp", &name)?;
     let backup = super::backup_config(&path)?;
     crate::storage::atomic_write::write_string_atomic(&path, &updated)?;
-    Ok(super::RemovalReport::removed("opencode", "view_mcp", entry_id, backup))
+    Ok(super::RemovalReport::removed(
+        "opencode", "view_mcp", entry_id, backup,
+    ))
 }
 
 fn plugins(home: &Path) -> ConfigView {
@@ -231,10 +285,21 @@ mod tests {
         let config = dir.join("opencode.jsonc");
         std::fs::write(&config, "{\n  // keep this comment\n  \"mcp\": {\n    \"remove\": { \"command\": [\"run\"] },\n    \"keep\": { \"command\": [\"stay\"] }\n  },\n  \"plugin\": [\"keep-me\"]\n}\n").unwrap();
         let view = mcp(d.path());
-        let entry = view.sections.iter().find(|section| section.label == "remove").unwrap().entry.as_ref().unwrap();
+        let entry = view
+            .sections
+            .iter()
+            .find(|section| section.label == "remove")
+            .unwrap()
+            .entry
+            .as_ref()
+            .unwrap();
 
         let updated = crate::hooks::config_formats::jsonc::delete_nested_object_key(
-            &std::fs::read_to_string(config).unwrap(), "mcp", "remove").unwrap();
+            &std::fs::read_to_string(config).unwrap(),
+            "mcp",
+            "remove",
+        )
+        .unwrap();
         assert!(updated.contains("keep this comment"));
         assert!(updated.contains("keep-me"));
         assert!(updated.contains("\\\"keep\\\"") || updated.contains("\"keep\""));

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   blocksToChainSteps,
+  getEventHeaderTags,
   segmentEventBlocks,
   splitThinkingSteps,
 } from "@/features/sessions/session-chain-of-thought-utils";
@@ -41,6 +42,20 @@ describe("segmentEventBlocks", () => {
         kind: "block",
         block: blocks[3],
       },
+    ]);
+  });
+});
+
+describe("getEventHeaderTags", () => {
+  it("collapses chain blocks into one chain-of-thought tag", () => {
+    const blocks: EventBlock[] = [
+      { type: "thinking", text: "Plan the change." },
+      { type: "tool_call", tool_call_id: "t1", name: "Grep", input: { pattern: "foo" } },
+      { type: "text", text: "Final answer." },
+    ];
+
+    expect(getEventHeaderTags(blocks)).toEqual([
+      { type: "chain", label: "Chain of thought" },
     ]);
   });
 });

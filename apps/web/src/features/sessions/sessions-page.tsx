@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRightIcon, EyeIcon, PinIcon, RefreshCwIcon, RotateCwIcon, SearchIcon, TriangleAlertIcon } from "lucide-react";
+import { ArchiveIcon, ArrowRightIcon, EyeIcon, PinIcon, RefreshCwIcon, RotateCwIcon, SearchIcon, TriangleAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 import { PageEmpty, PageError, PageSkeleton } from "@/components/shared/page-states";
 import { PathText } from "@/components/shared/path-text";
@@ -171,16 +171,16 @@ export function SessionsPage() {
               <CardDescription>{t("sessionsProviderCount", { count: group.sessions.length })}</CardDescription>
             </CardHeader>
             <CardContent>
-              <Table>
+              <Table className="table-fixed">
                 <TableHeader>
                   <TableRow>
-                    <TableHead>{t("sessionsTitle")}</TableHead>
-                    <TableHead>{t("sessionsStatus")}</TableHead>
-                    <TableHead>{t("sessionsWorkspace")}</TableHead>
-                    <TableHead>{t("sessionsUpdated")}</TableHead>
-                    <TableHead className="text-right">{t("sessionsMessages")}</TableHead>
-                    <TableHead className="text-right">{t("size")}</TableHead>
-                    <TableHead className="text-right">{t("sessionsOpen")}</TableHead>
+                    <TableHead className="w-[26%]">{t("sessionsTitle")}</TableHead>
+                    <TableHead className="w-[13%]">{t("sessionsStatus")}</TableHead>
+                    <TableHead className="w-[22%]">{t("sessionsWorkspace")}</TableHead>
+                    <TableHead className="w-[11%]">{t("sessionsUpdated")}</TableHead>
+                    <TableHead className="w-[8%] text-right">{t("sessionsMessages")}</TableHead>
+                    <TableHead className="w-[8%] text-right">{t("size")}</TableHead>
+                    <TableHead className="w-[12%] text-right">{t("sessionsOpen")}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -195,11 +195,12 @@ export function SessionsPage() {
                       <TableCell>
                         <div className="flex flex-wrap gap-1">
                           {session.pinned ? <Badge variant="secondary"><PinIcon />{t("sessionsPinned")}</Badge> : null}
+                          {session.archived ? <Badge variant="outline"><ArchiveIcon />{t("sessionsArchived")}</Badge> : null}
                           {session.hidden ? <Badge variant="outline"><EyeIcon />{t("sessionsHidden")}</Badge> : null}
                           {session.stale ? <Badge variant="destructive"><TriangleAlertIcon />{t("sessionsStale")}</Badge> : null}
                         </div>
                       </TableCell>
-                      <TableCell><PathText value={session.project_dir} wrap="all" /></TableCell>
+                      <TableCell><PathText value={session.project_dir} wrap="truncate" className="block max-w-56" /></TableCell>
                       <TableCell>{formatDateTime(session.last_active_at)}</TableCell>
                       <TableCell className="text-right">{session.message_count ?? "-"}</TableCell>
                       <TableCell className="text-right">{formatBytes(session.size_bytes)}</TableCell>

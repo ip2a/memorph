@@ -89,6 +89,7 @@ impl Provider for DroidProvider {
                     .iter()
                     .find_map(|e| text_for(e).filter(|s| !s.trim().is_empty()));
                 sessions.push(ProviderSessionSummary {
+                    archived: false,
                     session_id: id,
                     title,
                     project_dir: events.iter().find_map(workspace),
@@ -290,7 +291,9 @@ fn blocks(v: &Value) -> Vec<Block> {
                         .unwrap_or("unknown")
                         .into(),
                     content: b.get("content").map(|x| x.to_string()).unwrap_or_default(),
-                    outcome: crate::session::execution_outcome(b.get("is_error").and_then(Value::as_bool).unwrap_or(false)),
+                    outcome: crate::session::execution_outcome(
+                        b.get("is_error").and_then(Value::as_bool).unwrap_or(false),
+                    ),
                 }),
                 _ => None,
             },
@@ -315,10 +318,10 @@ fn map_event(v: &Value, i: usize, r: &mut MappingReport) -> Option<Event> {
     if bs.is_empty() {
         return None;
     };
-    let kind = if bs.iter().any(|b| matches!(b, Block::ToolCall { .. })) {
-        EventKind::Action
-    } else if bs.iter().any(|b| matches!(b, Block::ToolResult { .. })) {
+    let kind = if bs.iter().any(|b| matches!(b, Block::ToolResult { .. })) {
         EventKind::Observation
+    } else if bs.iter().any(|b| matches!(b, Block::ToolCall { .. })) {
+        EventKind::Action
     } else {
         EventKind::Message
     };

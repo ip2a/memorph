@@ -2554,6 +2554,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
+ "toml 0.8.2",
  "uuid",
  "walkdir",
 ]
@@ -2746,9 +2747,9 @@ dependencies = [
 
 [[package]]
 name = "oasf"
-version = "0.1.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c42c71516f15a125b9fa3784ba6a424649a18d14872f3452074caec8a63dbcc"
+checksum = "5a2621784d1af5c84c18b9c1fb57874d1c38cb11f7b241c122983fa6d0b93997"
 dependencies = [
  "chrono",
  "serde",

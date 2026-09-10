@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { RefreshCwIcon, SearchIcon } from "lucide-react";
+import { ArchiveIcon, RefreshCwIcon, SearchIcon } from "lucide-react";
 import { toast } from "sonner";
 import { PageError, PageSkeleton } from "@/components/shared/page-states";
 import { PanelCard } from "@/components/shared/panel-card";
@@ -36,8 +36,20 @@ import {
   useSkillTree,
   useSkills,
   useUninstallSkill,
+  useDeleteSkill,
+  useDisableSkill,
+  useConsolidateSkill,
+  useRemoveSymlinksSkill,
+  useDeleteSkillInstallation,
 } from "@/features/skills/queries";
 import { SkillDetailPanel } from "@/features/skills/skill-detail-panel";
+import { SkillDisabledDialog } from "@/features/skills/skill-disabled-dialog";
+import {
+  skillInstallScopeFromMutation,
+  skillInstallScopeKey,
+  skillInstallScopeToMutation,
+  type SkillInstallScope,
+} from "@/features/skills/skill-install-scope";
 import {
   SkillsCatalogFilterTrigger,
   type SkillsCatalogFilterApply,
@@ -46,10 +58,13 @@ import {
 import { SkillOverviewPanel } from "@/features/skills/skill-overview-panel";
 import { clampSkillsCatalogPageSize } from "@/features/skills/skills-catalog-page-size";
 import { buildUpdateSettingsPayloadFromMeta } from "@/features/skills/skills-settings-payload";
+import { realPathOf } from "@/features/skills/skills-real-path";
 import { getMeta, updateSettings } from "@/lib/api";
+import { normalizeSkillDescription } from "@/lib/format";
 import { useI18n } from "@/lib/i18n-context";
 import { queryKeys } from "@/lib/query-keys";
 import { useUiStore } from "@/stores/ui-store";
+import type { SkillCatalogItem } from "@/lib/types";
 
 export function SkillsPage() {
   const { t } = useI18n();
@@ -65,7 +80,11 @@ export function SkillsPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [rightView, setRightView] = useState<"overview" | "detail">("overview");
   const [previewPath, setPreviewPath] = useState<string | null>(null);
-  const [removalAgent, setRemovalAgent] = useState<string | null>(null);
+  const [removalTarget, setRemovalTarget] = useState<SkillInstallScope | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [disableOpen, setDisableOpen] = useState(false);
+  const [disabledListOpen, setDisabledListOpen] = useState(false);
+  const [consolidatingPath, setConsolidatingPath] = useState<string | null>(null);
   const initialScanStarted = useRef(false);
   const metaQuery = useQuery({ queryKey: queryKeys.meta, queryFn: getMeta });
   const pageSize = clampSkillsCatalogPageSize(
@@ -91,6 +110,8 @@ export function SkillsPage() {
       );
     },
   });
+  const currentWorkspace =
+    useUiStore((state) => state.selectedWorkspace) ?? undefined;
   const skillsQuery = useSkills({
     query: search.trim() || undefined,
     used_by: usedBy === "all" ? undefined : usedBy,
@@ -99,14 +120,21 @@ export function SkillsPage() {
     order,
     page,
     pageSize,
+    workspace: currentWorkspace,
   });
-  const currentWorkspace =
-    useUiStore((state) => state.selectedWorkspace) ?? undefined;
   const scanMutation = useScanSkills();
   const installMutation = useInstallSkill();
   const uninstallMutation = useUninstallSkill();
+  const deleteMutation = useDeleteSkill();
+  const disableMutation = useDisableSkill();
+  const consolidateMutation = useConsolidateSkill();
+  const removeSymlinksMutation = useRemoveSymlinksSkill();
+  const deleteInstallationMutation = useDeleteSkillInstallation();
   const items = skillsQuery.data?.items ?? [];
   const selected = items.find((item) => item.id === selectedId) ?? null;
+  const consolidatedItem = consolidatingPath
+    ? items.find((item) => realPathOf(item) === consolidatingPath) ?? null
+    : null;
   const detailId = selected?.id ?? null;
   const sourceUsedBy = selected?.installations.find(
     (item) => item.status === "active",
@@ -154,9 +182,32 @@ export function SkillsPage() {
     );
   }
 
-  const pending = installMutation.isPending || uninstallMutation.isPending;
+  const pending =
+    installMutation.isPending ||
+    uninstallMutation.isPending ||
+    deleteMutation.isPending ||
+    disableMutation.isPending ||
+    consolidateMutation.isPending ||
+    removeSymlinksMutation.isPending ||
+    deleteInstallationMutation.isPending;
+  const pendingTarget = installMutation.isPending
+    ? skillInstallScopeKey(
+        skillInstallScopeFromMutation(installMutation.variables!),
+      )
+    : uninstallMutation.isPending
+      ? skillInstallScopeKey(
+          skillInstallScopeFromMutation(uninstallMutation.variables!),
+        )
+      : null;
   const mutationError =
-    scanMutation.error || installMutation.error || uninstallMutation.error;
+    scanMutation.error ||
+    installMutation.error ||
+    uninstallMutation.error ||
+    deleteMutation.error ||
+    disableMutation.error ||
+    consolidateMutation.error ||
+    removeSymlinksMutation.error ||
+    deleteInstallationMutation.error;
   const total = skillsQuery.data?.total ?? 0;
   const responsePageSize = skillsQuery.data?.page_size ?? pageSize;
   const pageCount = Math.max(1, Math.ceil(total / responsePageSize));
@@ -205,20 +256,30 @@ export function SkillsPage() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() =>
+                    onClick={() => {
+                      uninstallMutation.reset();
                       scanMutation.mutate(
                         { mode: "incremental", workspace: currentWorkspace },
                         {
                           onSuccess: () =>
                             toast.success(t("skillsScanQueued")),
                         },
-                      )
-                    }
+                      );
+                    }}
                     disabled={scanMutation.isPending}
                     title={t("skillsRefreshList")}
                   >
                     {scanMutation.isPending ? <Spinner /> : <RefreshCwIcon />}
                     {t("skillsRefreshList")}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setDisabledListOpen(true)}
+                    title={t("skillsDisabledList")}
+                  >
+                    <ArchiveIcon />
+                    {t("skillsDisabledList")}
                   </Button>
                 </div>
               </div>
@@ -260,11 +321,21 @@ export function SkillsPage() {
                     selected={rightView === "detail" && item.id === selectedId}
                     title={item.name}
                     meta={
-                      <span className="flex flex-wrap items-center gap-1">
-                        <span>{item.description || item.source_id}</span>
-                        {item.tags.map((tag) => (
-                          <Badge key={tag} variant="outline">{tag}</Badge>
-                        ))}
+                      <span className="flex flex-col gap-0.5">
+                        <span className="flex flex-wrap items-center gap-1">
+                          <span>{normalizeSkillDescription(item.description) || item.source_id}</span>
+                          {item.tags.map((tag) => (
+                            <Badge key={tag} variant="outline">{tag}</Badge>
+                          ))}
+                        </span>
+                        {realPathOf(item) ? (
+                          <span
+                            className="truncate font-mono text-[11px] text-muted-foreground"
+                            title={realPathOf(item)}
+                          >
+                            {realPathOf(item)}
+                          </span>
+                        ) : null}
                       </span>
                     }
                     onClick={() => {
@@ -308,53 +379,222 @@ export function SkillsPage() {
                 preview={previewQuery.data}
                 previewLoading={previewQuery.isLoading}
                 pending={pending}
+                pendingTarget={pendingTarget}
                 mutationError={mutationError}
                 provider={usedBy === "all" ? undefined : usedBy}
-                onInstall={(agent) =>
-                  selected &&
-                  installMutation.mutate({
-                    skill_id: selected.source_id,
-                    used_by: agent,
-                    source_used_by: sourceUsedBy,
-                  })
-                }
-                onRemove={setRemovalAgent}
+                currentWorkspace={currentWorkspace}
+                onInstall={(scope) => {
+                  if (!selected) return;
+                  installMutation.mutate(
+                    skillInstallScopeToMutation(
+                      scope,
+                      selected.source_id,
+                      sourceUsedBy,
+                    ),
+                    {
+                      onSuccess: () => {
+                        toast.success(
+                          t("skillsInstalled", {
+                            skill: selected.name,
+                            agent: scope.usedBy,
+                          }),
+                        );
+                      },
+                    },
+                  );
+                }}
+                onRemove={(scope) => {
+                  uninstallMutation.reset();
+                  setRemovalTarget(scope);
+                }}
+                onDelete={() => setDeleteOpen(true)}
+                onDisable={() => setDisableOpen(true)}
+                onConsolidate={(canonicalPath) => {
+                  if (!selected) return;
+                  setConsolidatingPath(canonicalPath);
+                  consolidateMutation.mutate(canonicalPath, {
+                    onSuccess: async () => {
+                      const refreshed = await skillsQuery.refetch();
+                      const nextItems = refreshed.data?.items ?? [];
+                      const nextItem =
+                        nextItems.find(
+                          (item) => realPathOf(item) === canonicalPath,
+                        ) ??
+                        nextItems.find((item) => item.name === selected.name) ??
+                        null;
+                      setSelectedId(nextItem?.id ?? null);
+                      setRightView(nextItem ? "detail" : "overview");
+                      setConsolidatingPath(null);
+                      toast.success(
+                        t("skillsConsolidated", { skill: selected.name }),
+                      );
+                    },
+                    onError: () => setConsolidatingPath(null),
+                  });
+                }}
+                onRemoveSymlinks={() => {
+                  if (!selected) return;
+                  removeSymlinksMutation.mutate(selected.id, {
+                    onSuccess: () =>
+                      toast.success(
+                        t("skillsRemoveSymlinksDone", { skill: selected.name }),
+                      ),
+                  });
+                }}
+                onDeleteInstallation={(installPath) => {
+                  deleteInstallationMutation.mutate(installPath, {
+                    onSuccess: () => {
+                      toast.success(t("skillsConsolidateDeleted"));
+                    },
+                  });
+                }}
               />
             )}
           </PanelCard>
         </TwoPanePage>
       </div>
+      <AlertDialog open={Boolean(consolidatingPath)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <Spinner />
+              {t("skillsConsolidateRedirectTitle")}
+            </AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2">
+              <span className="block">
+                {consolidatedItem
+                  ? t("skillsConsolidateRedirectReady")
+                  : t("skillsConsolidateRedirectDescription")}
+              </span>
+              <span
+                className="block break-all rounded-md bg-muted px-3 py-2 font-mono text-xs text-foreground"
+                title={consolidatingPath ?? undefined}
+              >
+                {consolidatingPath}
+              </span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog
-        open={Boolean(removalAgent)}
-        onOpenChange={(open) => !open && setRemovalAgent(null)}
+        open={Boolean(removalTarget)}
+        onOpenChange={(open) => !open && setRemovalTarget(null)}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{t("skillsRemoveTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              {t("skillsRemoveDescription", {
-                skill: selected?.name || "",
-                agent: removalAgent || "",
-              })}
+              {removalTarget?.scopeKind === "project"
+                ? t("skillsRemoveWorkspaceSymlinkDescription", {
+                    skill: selected?.name || "",
+                    agent: removalTarget.usedBy,
+                  })
+                : t("skillsRemoveAgentSymlinkDescription", {
+                    skill: selected?.name || "",
+                    agent: removalTarget?.usedBy || "",
+                  })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={uninstallMutation.isPending}
+              onClick={() => {
+                if (selected && removalTarget) {
+                  uninstallMutation.mutate(
+                    skillInstallScopeToMutation(
+                      removalTarget,
+                      selected.source_id,
+                    ),
+                    {
+                      onSuccess: () => {
+                        setRemovalTarget(null);
+                        toast.success(
+                          t("skillsRemoved", {
+                            skill: selected.name,
+                            agent: removalTarget.usedBy,
+                          }),
+                        );
+                      },
+                    },
+                  );
+                }
+              }}
+            >
+              {uninstallMutation.isPending ? <Spinner data-icon="inline-start" /> : null}
+              {t("remove")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("skillsDeleteTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("skillsDeleteDescription", { skill: selected?.name || "" })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
-                if (selected && removalAgent)
-                  uninstallMutation.mutate({
-                    skill_id: selected.source_id,
-                    used_by: removalAgent,
+                if (selected) {
+                  deleteMutation.mutate(selected.id, {
+                    onSuccess: () => {
+                      setSelectedId(null);
+                      setRightView("overview");
+                      toast.success(t("skillsDeleted"));
+                    },
                   });
-                setRemovalAgent(null);
+                }
+                setDeleteOpen(false);
               }}
             >
-              {t("remove")}
+              {t("delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <AlertDialog open={disableOpen} onOpenChange={setDisableOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("skillsDisableTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("skillsDisableDescription", { skill: selected?.name || "" })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={disableMutation.isPending}
+              onClick={() => {
+                if (selected) {
+                  disableMutation.mutate(selected.id, {
+                    onSuccess: () => {
+                      setDisableOpen(false);
+                      setSelectedId(null);
+                      setRightView("overview");
+                      toast.success(
+                        t("skillsDisabled", { skill: selected.name }),
+                      );
+                    },
+                  });
+                }
+              }}
+            >
+              {disableMutation.isPending ? (
+                <Spinner data-icon="inline-start" />
+              ) : null}
+              {t("skillsDisable")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <SkillDisabledDialog
+        open={disabledListOpen}
+        onOpenChange={setDisabledListOpen}
+      />
     </>
   );
 }

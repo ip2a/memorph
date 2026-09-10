@@ -16,8 +16,7 @@ use crate::core::workspace_scan_policy::{decide_scan, ScanDecision};
 use crate::core::workspace_session_feed::ensure_provider_scan;
 use crate::providers;
 use crate::storage::{
-    activity_store::ActivityActor, local_store,
-    workspace_scan_state::WorkspaceScanStateStore,
+    activity_store::ActivityActor, local_store, workspace_scan_state::WorkspaceScanStateStore,
 };
 use anyhow::{Context as _, Result};
 
@@ -38,9 +37,7 @@ pub fn run_discovery_pass() -> Result<usize> {
     let now = crate::utils::now_ms();
 
     let mut stmt = conn
-        .prepare(
-            "SELECT DISTINCT workspace_key, provider_id FROM workspace_provider_scan_state",
-        )
+        .prepare("SELECT DISTINCT workspace_key, provider_id FROM workspace_provider_scan_state")
         .context("Failed to read scan state rows for discovery")?;
     let rows: rusqlite::Result<Vec<(String, String)>> = stmt
         .query_map([], |row| {

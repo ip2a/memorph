@@ -124,22 +124,39 @@ pub struct InvocationPage {
 }
 
 pub fn index(conn: &mut Connection, force: bool) -> Result<IndexSummary> {
-    index_impl(conn, force, false)
+    index_impl(conn, force, false, |_, _, _| {})
+}
+
+pub fn index_with_progress<F>(
+    conn: &mut Connection,
+    force: bool,
+    progress: F,
+) -> Result<IndexSummary>
+where
+    F: Fn(usize, usize, &'static str),
+{
+    index_impl(conn, force, false, progress)
 }
 
 pub fn index_sources_incrementally(conn: &mut Connection) -> Result<IndexSummary> {
-    index_impl(conn, false, true)
+    index_impl(conn, false, true, |_, _, _| {})
 }
 
-fn index_impl(
+fn index_impl<F>(
     conn: &mut Connection,
     force: bool,
     invalidate_catalog: bool,
-) -> Result<IndexSummary> {
+    progress: F,
+) -> Result<IndexSummary>
+where
+    F: Fn(usize, usize, &'static str),
+{
     let now_ms = Utc::now().timestamp_millis();
     let identities = load_identities(conn)?;
     let catalog_generation = catalog_generation_from_identities(&identities);
     let sources = repository::session_sources(conn)?;
+    let total_sources = sources.len();
+    progress(0, total_sources, "indexing_sources");
     let aggregate_key = "skill-sessions:all";
     if invalidate_catalog {
         conn.execute(
@@ -152,7 +169,7 @@ fn index_impl(
     repository::begin_scan(conn, aggregate_key, "aggregate", None, None, now_ms)?;
     let mut summary = IndexSummary::default();
 
-    for source in &sources {
+    for (processed, source) in sources.iter().enumerate() {
         let state_key = format!("session-source:{}", source.id);
         if !force
             && repository::session_source_scan_is_current(
@@ -164,6 +181,7 @@ fn index_impl(
             )?
         {
             summary.sources_skipped += 1;
+            progress(processed + 1, total_sources, "indexing_sources");
             continue;
         }
         repository::begin_scan(
@@ -198,9 +216,12 @@ fn index_impl(
                 repository::fail_scan(conn, &state_key, &format!("{error:#}"), now_ms)?;
             }
         }
+        progress(processed + 1, total_sources, "indexing_sources");
     }
+    progress(total_sources, total_sources, "rebuilding_daily");
     if force || summary.sources_scanned > 0 {
         rebuild_daily(conn, now_ms)?;
+        progress(total_sources, total_sources, "rebuilding_coverage");
         super::coverage::rebuild(conn)?;
     }
     let (count, earliest, latest): (i64, Option<i64>, Option<i64>) = conn.query_row(

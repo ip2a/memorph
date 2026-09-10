@@ -2271,6 +2271,7 @@ fn build_session_load_payload(
                 limit: None,
                 offset: None,
                 sort: core::SessionListSort::Recent,
+                filter: Default::default(),
             };
             let mut session_groups = core::projection::list_sessions(&params)?;
             apply_session_group_preferences(&mut session_groups, &prefs);
@@ -2311,6 +2312,7 @@ fn build_session_load_payload(
                 limit: None,
                 offset: None,
                 sort: core::SessionListSort::Recent,
+                filter: Default::default(),
             };
             let mut session_groups = core::projection::list_sessions(&params)?;
             apply_session_group_preferences(&mut session_groups, &prefs);

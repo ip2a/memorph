@@ -1389,6 +1389,7 @@ fn session_index_and_detail_dispatch_are_idempotent_source_backed_and_bodyless()
         limit: None,
         offset: None,
         sort: crate::core::SessionListSort::Recent,
+        filter: Default::default(),
     })
     .unwrap();
     assert_eq!(groups.len(), 1);
@@ -1698,6 +1699,7 @@ fn bootstrap_stale_and_system_sync_are_incremental_source_backed_and_bodyless() 
         limit: None,
         offset: None,
         sort: crate::core::SessionListSort::Recent,
+        filter: Default::default(),
     })
     .unwrap();
     assert_eq!(groups.len(), 1);
