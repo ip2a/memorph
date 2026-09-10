@@ -509,16 +509,19 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        let installation_status: String = store
+        let leftover: (i64, i64) = store
             .connection()
-            .query_row("SELECT status FROM skill_installations", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM skill_installations),
+                        (SELECT COUNT(*) FROM skill_catalog)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .unwrap();
         assert_eq!(rebuilt_state.0, 3);
         assert!(rebuilt_state.1.is_some());
         assert_eq!(rebuilt_state.2, "complete");
-        assert_eq!(installation_status, "missing");
+        assert_eq!(leftover, (0, 0)); // removed skills are purged, not left as ghosts
     }
 
     #[test]
