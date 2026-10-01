@@ -22,16 +22,6 @@ const CLAUDE_EVENTS: &[HookProviderEventProfile] = &[
     event("PreCompact", false),
 ];
 
-const CLINE_EVENTS: &[HookProviderEventProfile] = &[
-    event("UserPromptSubmit", false),
-    event("PreToolUse", true),
-    event("PostToolUse", false),
-    event("TaskStart", false),
-    event("TaskResume", false),
-    event("TaskCancel", false),
-    event("TaskComplete", false),
-];
-
 const CODEX_EVENTS: &[HookProviderEventProfile] = &[
     event("SessionStart", false),
     event("SessionEnd", false),
@@ -107,30 +97,6 @@ const QODER_EVENTS: &[HookProviderEventProfile] = &[
     event("Notification", false),
     event("PreCompact", true),
 ];
-const FACTORY_EVENTS: &[HookProviderEventProfile] = &[
-    event("UserPromptSubmit", true),
-    event("PreToolUse", false),
-    event("PostToolUse", true),
-    event("SessionStart", false),
-    event("SessionEnd", true),
-    event("Stop", true),
-    event("SubagentStart", true),
-    event("SubagentStop", true),
-    event("Notification", false),
-    event("PreCompact", true),
-];
-const CODEBUDDY_EVENTS: &[HookProviderEventProfile] = &[
-    event("UserPromptSubmit", true),
-    event("PreToolUse", false),
-    event("PostToolUse", true),
-    event("SessionStart", false),
-    event("SessionEnd", true),
-    event("Stop", true),
-    event("SubagentStart", true),
-    event("SubagentStop", true),
-    event("Notification", false),
-    event("PreCompact", true),
-];
 const ANTIGRAVITY_EVENTS: &[HookProviderEventProfile] = &[
     event("UserPromptSubmit", true),
     event("PreToolUse", false),
@@ -155,34 +121,6 @@ const WORKBUDDY_EVENTS: &[HookProviderEventProfile] = &[
     event("Notification", false),
     event("PreCompact", true),
 ];
-const HERMES_EVENTS: &[HookProviderEventProfile] = &[
-    event("UserPromptSubmit", true),
-    event("PreToolUse", false),
-    event("PostToolUse", true),
-    event("SessionStart", false),
-    event("SessionEnd", true),
-    event("Stop", true),
-    event("SubagentStart", true),
-    event("SubagentStop", true),
-    event("Notification", false),
-    event("PreCompact", true),
-];
-const TRAE_EVENTS: &[HookProviderEventProfile] = &[
-    event("session_start", false),
-    event("session_end", false),
-    event("user_prompt_submit", false),
-    event("pre_tool_use", false),
-    event("post_tool_use", false),
-    event("post_tool_use_failure", false),
-    event("permission_request", true),
-    event("notification", false),
-    event("subagent_start", false),
-    event("subagent_stop", false),
-    event("stop", false),
-    event("pre_compact", false),
-    event("post_compact", false),
-];
-
 const PI_EVENTS: &[HookProviderEventProfile] = &[
     event("SessionStart", false),
     event("SessionEnd", true),
@@ -212,14 +150,6 @@ const PROFILES: &[HookProviderProfile] = &[
         HookConfigStrategyKind::ClaudeLikeJson,
         "~/.claude/settings.json",
         CLAUDE_EVENTS,
-    ),
-    profile(
-        "cline",
-        "Cline",
-        HookFormat::ClineFiles,
-        HookConfigStrategyKind::ClineFiles,
-        "~/Documents/Cline/Rules/Hooks or ~/Documents/Cline/Hooks",
-        CLINE_EVENTS,
     ),
     profile(
         "codex",
@@ -286,22 +216,6 @@ const PROFILES: &[HookProviderProfile] = &[
         QODER_EVENTS,
     ),
     profile(
-        "droid",
-        "Factory",
-        HookFormat::FactoryClaudeJson,
-        HookConfigStrategyKind::ClaudeLikeJson,
-        "~/.factory/settings.json",
-        FACTORY_EVENTS,
-    ),
-    profile(
-        "codebuddy",
-        "CodeBuddy",
-        HookFormat::CodeBuddyClaudeJson,
-        HookConfigStrategyKind::ClaudeLikeJson,
-        "~/.codebuddy/settings.json",
-        CODEBUDDY_EVENTS,
-    ),
-    profile(
         "antigravity",
         "AntiGravity",
         HookFormat::AntiGravityClaudeJson,
@@ -318,28 +232,12 @@ const PROFILES: &[HookProviderProfile] = &[
         WORKBUDDY_EVENTS,
     ),
     profile(
-        "hermes",
-        "Hermes",
-        HookFormat::HermesClaudeJson,
-        HookConfigStrategyKind::ClaudeLikeJson,
-        "~/.hermes/settings.json",
-        HERMES_EVENTS,
-    ),
-    profile(
         "pi",
         "pi",
         HookFormat::PiExtension,
         HookConfigStrategyKind::PiExtension,
         "~/.pi/agent/extensions/memorph.ts",
         PI_EVENTS,
-    ),
-    profile(
-        "trae",
-        "TraeCli",
-        HookFormat::TraeYaml,
-        HookConfigStrategyKind::TraeYaml,
-        "~/.trae/traecli.yaml",
-        TRAE_EVENTS,
     ),
 ];
 
@@ -381,10 +279,8 @@ pub(crate) fn find(provider: &str) -> Option<&'static HookProviderProfile> {
 fn normalize_provider_id(provider: &str) -> String {
     let provider = provider.trim().to_ascii_lowercase();
     match provider.as_str() {
-        "traecli" | "trae-cli" | "trae_cli" => "trae".to_string(),
         "claude-code" | "claude_code" => "claude".to_string(),
         "gemini-cli" | "gemini_cli" => "gemini".to_string(),
-        "cline-agent" | "cline_agent" => "cline".to_string(),
         other => crate::providers::canonical_provider_id(other),
     }
 }
@@ -405,16 +301,11 @@ mod tests {
     fn profile_registry_exposes_supported_hook_providers() {
         for provider in [
             "claude",
-            "cline",
             "codex",
             "opencode",
-            "trae",
             "qoder",
-            "droid",
-            "codebuddy",
             "antigravity",
             "workbuddy",
-            "hermes",
             "pi",
         ] {
             assert!(supports_provider(provider), "missing profile: {provider}");
@@ -436,8 +327,6 @@ mod tests {
     #[test]
     fn accepts_provider_aliases() {
         assert_eq!(find("claude-code").unwrap().provider, "claude");
-        assert_eq!(find("traecli").unwrap().provider, "trae");
-        assert_eq!(find("factory").unwrap().provider, "droid");
     }
 
     #[test]
@@ -447,18 +336,12 @@ mod tests {
             "codex",
             "gemini",
             "cursor",
-            "trae",
-            "traecli",
             "qoder",
-            "droid",
-            "codebuddy",
             "antigravity",
             "workbuddy",
-            "hermes",
             "copilot",
             "kimi",
             "kiro",
-            "cline",
             "pi",
         ];
 
@@ -466,13 +349,9 @@ mod tests {
             if source.starts_with("codeisland-") {
                 continue;
             }
-            let provider = match source {
-                "traecli" => "trae",
-                other => other,
-            };
             assert!(
-                supports_provider(provider),
-                "CodeIsland provider source is not registered in memorph: {source} -> {provider}"
+                supports_provider(source),
+                "CodeIsland provider source is not registered in memorph: {source}"
             );
         }
         assert!(supports_provider("opencode"));

@@ -2,7 +2,7 @@ use anyhow::{Context as _, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use std::collections::BTreeSet;
 
-const ALL_SKILL_AGENTS: [&str; 5] = ["claude", "codex", "gemini", "opencode", "hermes"];
+const ALL_SKILL_AGENTS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CatalogRecord {
@@ -901,7 +901,7 @@ mod catalog_tests {
         assert_eq!(page.items[0].installations[0].used_by, "all");
         assert_eq!(
             page.items[0].used_by,
-            vec!["claude", "codex", "gemini", "hermes", "opencode"]
+            vec!["claude", "codex", "gemini", "opencode"]
         );
         assert_eq!(page.used_by, page.items[0].used_by);
     }

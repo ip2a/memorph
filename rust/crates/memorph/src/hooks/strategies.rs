@@ -13,7 +13,6 @@ use crate::hooks::model::{HookInstallStatus, HookOperationReport};
 #[serde(rename_all = "snake_case")]
 pub enum HookConfigStrategyKind {
     ClaudeLikeJson,
-    ClineFiles,
     CodexJson,
     CopilotJson,
     FlatJson,
@@ -22,7 +21,6 @@ pub enum HookConfigStrategyKind {
     KiroAgentJson,
     OpenCodePlugin,
     PiExtension,
-    TraeYaml,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

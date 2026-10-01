@@ -3,29 +3,18 @@ use std::path::PathBuf;
 pub(crate) fn executable_candidates(provider_id: &str) -> &'static [&'static str] {
     let provider_id = crate::providers::canonical_provider_id(provider_id);
     match provider_id.as_str() {
-        "augment" => &["auggie"],
         "antigravity" => &["antigravity"],
-        "amazonq" => &["q"],
         "claude" => &["claude"],
         "codex" => &["codex"],
-        "cline" => &["cline"],
         "copilot" => &["gh"],
         "cursor" => &["cursor-agent", "cursor"],
-        "deepseek" => &["deepseek"],
-        "codebuddy" => &["codebuddy"],
-        "droid" => &["factory", "droid"],
         "gemini" => &["gemini"],
-        "hermes" => &["hermes"],
         "kiro" => &["kiro"],
         "kimi" => &["kimi"],
         "opencode" => &["opencode"],
-        "openclaw" => &["openclaw"],
         "pi" => &["pi"],
         "qoder" => &["qoder"],
-        "qwen" => &["qwen"],
-        "trae" => &["trae"],
         "workbuddy" => &["workbuddy"],
-        "windsurf" => &["windsurf"],
         _ => &[],
     }
 }
@@ -33,33 +22,20 @@ pub(crate) fn executable_candidates(provider_id: &str) -> &'static [&'static str
 pub(crate) fn config_path(provider_id: &str) -> PathBuf {
     let provider_id = crate::providers::canonical_provider_id(provider_id);
     match provider_id.as_str() {
-        "augment" => home_join(".augment"),
         "antigravity" => home_join(".antigravity"),
-        "amazonq" => dirs::data_local_dir()
-            .map(|dir| dir.join("amazon-q"))
-            .unwrap_or_else(|| PathBuf::from("amazon-q")),
         "claude" => home_join(".claude"),
         "codex" => home_join(".codex"),
-        "cline" => home_join("Documents/Cline"),
         "copilot" => app_config_dir("Code", ".config/Code")
             .join("User")
             .join("globalStorage"),
         "cursor" => cursor_config_dir(),
-        "deepseek" => home_join(".deepseek"),
-        "codebuddy" => home_join(".codebuddy"),
-        "droid" => home_join(".factory"),
         "gemini" => home_join(".gemini"),
-        "hermes" => home_join(".hermes"),
         "kiro" => kiro_config_dir(),
         "kimi" => home_join(".kimi"),
         "opencode" => home_join(".config/opencode"),
-        "openclaw" => home_join(".openclaw"),
         "pi" => home_join(".pi/agent"),
         "qoder" => home_join(".qoder"),
-        "qwen" => home_join(".qwen"),
-        "trae" => home_join(".trae"),
         "workbuddy" => home_join(".workbuddy"),
-        "windsurf" => app_config_dir("Windsurf", ".config/Windsurf"),
         other => PathBuf::from(other),
     }
 }
@@ -149,24 +125,13 @@ mod tests {
         assert_eq!(config_path("opencode"), home_join(".config/opencode"));
         assert_eq!(config_path("gemini"), home_join(".gemini"));
         assert_eq!(config_path("kimi"), home_join(".kimi"));
-        assert_eq!(config_path("qwen"), home_join(".qwen"));
-        assert_eq!(
-            config_path("amazonq"),
-            dirs::data_local_dir()
-                .map(|dir| dir.join("amazon-q"))
-                .unwrap_or_else(|| PathBuf::from("amazon-q"))
-        );
     }
 
     #[test]
     fn config_path_maps_codeisland_hook_roots() {
         assert_eq!(config_path("qoder"), home_join(".qoder"));
-        assert_eq!(config_path("droid"), home_join(".factory"));
-        assert_eq!(config_path("factory"), home_join(".factory"));
-        assert_eq!(config_path("codebuddy"), home_join(".codebuddy"));
         assert_eq!(config_path("antigravity"), home_join(".antigravity"));
         assert_eq!(config_path("workbuddy"), home_join(".workbuddy"));
-        assert_eq!(config_path("hermes"), home_join(".hermes"));
         assert_eq!(config_path("pi"), home_join(".pi/agent"));
     }
 
@@ -174,14 +139,9 @@ mod tests {
     fn executable_candidates_cover_codeisland_hook_providers() {
         for provider in [
             "qoder",
-            "droid",
-            "codebuddy",
             "antigravity",
             "workbuddy",
-            "hermes",
             "pi",
-            "amazonq",
-            "qwen",
         ] {
             assert!(
                 !executable_candidates(provider).is_empty(),

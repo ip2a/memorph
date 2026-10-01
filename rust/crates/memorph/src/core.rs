@@ -51,23 +51,15 @@ const PROJECTED_SESSION_PROVIDER_IDS: &[&str] = &[
     "claude",
     "codex",
     "cursor",
-    "deepseek",
     "gemini",
     "kimi",
     "kiro",
     "opencode",
-    "openclaw",
-    "cline",
     "copilot",
-    "droid",
-    "hermes",
-    "codebuddy",
     "qoder",
     "workbuddy",
     "pi",
     "antigravity",
-    "windsurf",
-    "trae",
 ];
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

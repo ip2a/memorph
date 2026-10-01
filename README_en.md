@@ -179,16 +179,13 @@ memorph supports session management for 23 AI coding agents. Capabilities differ
 | Hermes | ✅ | ❌ | ✅ |
 | Cline | ✅ | ❌ | ❌ |
 | Copilot | ✅ | ❌ | ❌ |
-| Droid | ✅ | ❌ | ❌ |
 | CodeBuddy | ✅ | ❌ | ❌ |
 | Qoder | ✅ | ❌ | ❌ |
-| Trae | ✅ | ❌ | ❌ |
 | WorkBuddy | ✅ | ❌ | ❌ |
 | Pi | ✅ | ❌ | ❌ |
 | Antigravity | ✅ | ❌ | ❌ |
 | OpenClaw | ✅ | ❌ | ❌ |
 | Augment | ✅ | ❌ | ❌ |
-| Windsurf | ✅ | ❌ | ❌ |
 | Amazon Q | ✅ | ❌ | ❌ |
 | Qwen | ✅ | ❌ | ❌ |
 

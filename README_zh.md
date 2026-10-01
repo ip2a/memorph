@@ -195,16 +195,13 @@ memorph 支持 23 个 AI 编程 Agent 的会话管理。各 Provider 的能力�
 | Hermes | ✅ | ❌ | ✅ |
 | Cline | ✅ | ❌ | ❌ |
 | Copilot | ✅ | ❌ | ❌ |
-| Droid | ✅ | ❌ | ❌ |
 | CodeBuddy | ✅ | ❌ | ❌ |
 | Qoder | ✅ | ❌ | ❌ |
-| Trae | ✅ | ❌ | ❌ |
 | WorkBuddy | ✅ | ❌ | ❌ |
 | Pi | ✅ | ❌ | ❌ |
 | Antigravity | ✅ | ❌ | ❌ |
 | OpenClaw | ✅ | ❌ | ❌ |
 | Augment | ✅ | ❌ | ❌ |
-| Windsurf | ✅ | ❌ | ❌ |
 | Amazon Q | ✅ | ❌ | ❌ |
 | Qwen | ✅ | ❌ | ❌ |
 

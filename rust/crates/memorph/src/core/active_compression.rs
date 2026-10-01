@@ -417,7 +417,6 @@ fn provider_chars_per_token_x100(provider_id: &str) -> usize {
         "codex" | "openai" | "opencode" => 400,
         "gemini" | "google" => 360,
         "kimi" => 320,
-        "deepseek" => 330,
         _ => default_chars_per_token_x100(),
     }
 }
@@ -575,7 +574,7 @@ mod tests {
             &sample_session(),
             ActiveCompressionParams {
                 source_provider_id: "kimi".to_string(),
-                target_provider_id: "deepseek".to_string(),
+                target_provider_id: "kimi".to_string(),
                 policy: ActiveCompressionPolicy::default(),
                 dry_run: true,
             },
@@ -589,11 +588,11 @@ mod tests {
         assert_eq!(value["token_estimator"]["strategy"], "provider_heuristic");
         assert_eq!(
             value["token_estimator"]["effective_provider_id"],
-            "deepseek"
+            "kimi"
         );
         assert_eq!(
             value["token_estimator"]["effective_chars_per_token_x100"],
-            330
+            320
         );
     }
 

@@ -907,8 +907,8 @@ mod tests {
     #[test]
     fn normalize_provider_ids_canonicalizes_aliases() {
         assert_eq!(
-            normalize_provider_ids(vec!["factory".to_string(), "droid".to_string(),]),
-            vec!["droid".to_string()]
+            normalize_provider_ids(vec!["work-buddy".to_string(), "workbuddy".to_string(),]),
+            vec!["workbuddy".to_string()]
         );
     }
 }

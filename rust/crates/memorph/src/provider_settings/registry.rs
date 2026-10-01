@@ -9,7 +9,6 @@ pub(super) fn find_provider_setting_module(
     let provider_id = crate::providers::canonical_provider_id(provider_id);
     match provider_id.as_str() {
         "claude" => Some(&super::claude::ClaudeSettingModule),
-        "cline" => Some(&super::cline::ClineSettingModule),
         "codex" => Some(&super::codex::CodexSettingModule),
         "copilot" => Some(&super::copilot::CopilotSettingModule),
         "cursor" => Some(&super::cursor::CursorSettingModule),
@@ -19,12 +18,8 @@ pub(super) fn find_provider_setting_module(
         "opencode" => Some(&super::opencode::OpenCodeSettingModule),
         "pi" => Some(&super::pi::PiSettingModule),
         "qoder" => Some(&super::qoder::QoderSettingModule),
-        "droid" => Some(&super::droid::DroidSettingModule),
-        "codebuddy" => Some(&super::codebuddy::CodeBuddySettingModule),
         "antigravity" => Some(&super::antigravity::AntiGravitySettingModule),
         "workbuddy" => Some(&super::workbuddy::WorkBuddySettingModule),
-        "hermes" => Some(&super::hermes::HermesSettingModule),
-        "trae" => Some(&super::trae::TraeSettingModule),
         _ => None,
     }
 }
@@ -52,10 +47,10 @@ mod tests {
     #[test]
     fn registry_resolves_setting_aliases() {
         assert_eq!(
-            find_provider_setting_module("factory")
-                .expect("factory alias module")
+            find_provider_setting_module("work-buddy")
+                .expect("work-buddy alias module")
                 .provider_id(),
-            "droid"
+            "workbuddy"
         );
     }
 }

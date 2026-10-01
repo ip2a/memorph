@@ -174,11 +174,8 @@ fn scan_target(provider: &str) -> Option<(&'static str, PathBuf)> {
         "cursor" => home.join(".cursor/hooks.json"),
         "gemini" => home.join(".gemini/settings.json"),
         "qoder" => crate::providers::qoder::hook::settings_path(),
-        "droid" => crate::providers::droid::hook::settings_path(),
-        "codebuddy" => crate::providers::codebuddy::hook::settings_path(),
         "antigravity" => crate::providers::antigravity::hook::settings_path(),
         "workbuddy" => crate::providers::workbuddy::hook::settings_path(),
-        "hermes" => crate::providers::hermes::hook::settings_path(),
         _ => return None,
     };
     Some((profile.provider, path))

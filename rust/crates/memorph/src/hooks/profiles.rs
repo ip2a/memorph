@@ -17,15 +17,10 @@ pub enum HookFormat {
     KimiToml,
     KiroAgentJson,
     OpenCodePlugin,
-    TraeYaml,
     QoderClaudeJson,
-    FactoryClaudeJson,
-    CodeBuddyClaudeJson,
     AntiGravityClaudeJson,
     WorkBuddyClaudeJson,
-    HermesClaudeJson,
     PiExtension,
-    ClineFiles,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
