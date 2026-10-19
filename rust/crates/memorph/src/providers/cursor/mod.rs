@@ -1,6 +1,6 @@
 pub mod adapter;
 mod backup;
-mod db;
+pub(crate) mod db;
 pub mod hook;
 mod load;
 mod scan;
