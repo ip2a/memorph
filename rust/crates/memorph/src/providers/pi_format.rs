@@ -18,10 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
-pub(crate) fn scan(
-    provider_id: &str,
-    roots: &[PathBuf],
-) -> Result<Vec<ProviderSessionSummary>> {
+pub(crate) fn scan(roots: &[PathBuf]) -> Result<Vec<ProviderSessionSummary>> {
     let mut sessions = Vec::new();
     for root in roots {
         if !root.exists() {

@@ -61,7 +61,7 @@ impl Provider for OmpProvider {
         }
     }
     fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
-        pi_format::scan(PROVIDER_ID, &roots())
+        pi_format::scan(&roots())
     }
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
         pi_format::import(PROVIDER_ID, source_path)

@@ -46,6 +46,7 @@ const PROVIDER_ID: &str = "zcode";
 #[cfg(test)]
 static TEST_ZCODE_DIR: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> =
     std::sync::OnceLock::new();
+static TEST_ZCODE_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
 
 impl Provider for ZcodeProvider {
     fn id(&self) -> &'static str {
@@ -333,15 +334,24 @@ fn hidden_session_ids() -> std::collections::HashSet<String> {
 mod tests {
     use super::*;
 
-    struct ZcodeDirGuard;
+    // Single TEST_ZCODE_DIR slot is process-global; hold a dedicated mutex for
+    // the test duration so parallel zcode tests can't overwrite each other's
+    // dir (runtime reads take the slot lock only briefly, so it stays free).
+    struct ZcodeDirGuard {
+        _serial: std::sync::MutexGuard<'static, ()>,
+    }
 
     impl ZcodeDirGuard {
         fn new(dir: PathBuf) -> Self {
+            let _serial = TEST_ZCODE_LOCK
+                .get_or_init(|| std::sync::Mutex::new(()))
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             *TEST_ZCODE_DIR
                 .get_or_init(|| std::sync::Mutex::new(None))
                 .lock()
                 .unwrap() = Some(dir);
-            ZcodeDirGuard
+            ZcodeDirGuard { _serial }
         }
     }
 
