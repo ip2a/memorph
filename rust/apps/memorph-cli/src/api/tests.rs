@@ -1797,8 +1797,20 @@ async fn catalog_route_returns_classified_providers() {
         gemini_capabilities["activity_support"]["session_activity"],
         false
     );
+}
 
-value["data"]["providers"].as_array().unwrap();
+#[tokio::test]
+async fn agents_summary_route_includes_settings_and_environment_without_features() {
+    let request = Request::builder()
+        .uri("/api/v1/agents/summary")
+        .body(Body::empty())
+        .unwrap();
+    let (status, value) = read_json(router(), request).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["ok"], true);
+
+    let providers = value["data"]["providers"].as_array().unwrap();
     let codex = providers
         .iter()
         .find(|provider| provider["provider_id"] == "codex")

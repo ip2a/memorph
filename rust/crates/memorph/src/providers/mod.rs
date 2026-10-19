@@ -1,5 +1,6 @@
 mod aliases;
 pub mod antigravity;
+pub mod grok;
 pub mod catalog;
 pub mod claude;
 pub mod codex;
@@ -13,9 +14,12 @@ pub mod opencode;
 pub mod pi;
 pub mod qoder;
 pub mod workbuddy;
+pub mod zcode;
 
 pub(crate) mod hook_profiles;
 mod hook_registry;
+pub mod omp;
+pub(crate) mod pi_format;
 pub(crate) mod q_conversation;
 
 use crate::provider::Provider;
@@ -33,6 +37,9 @@ const PROVIDER_IDS: &[&str] = &[
     "qoder",
     "workbuddy",
     "pi",
+    "omp",
+    "grok",
+    "zcode",
 ];
 
 pub struct ProviderRegistry;
@@ -57,6 +64,9 @@ impl ProviderRegistry {
             "kiro" => Some(Box::new(kiro::KiroProvider)),
             "kimi" => Some(Box::new(kimi::KimiProvider)),
             "opencode" => Some(Box::new(opencode::OpenCodeProvider)),
+            "omp" => Some(Box::new(omp::OmpProvider)),
+            "grok" => Some(Box::new(grok::GrokProvider)),
+            "zcode" => Some(Box::new(zcode::ZcodeProvider)),
             _ => None,
         }
     }
@@ -116,6 +126,9 @@ mod tests {
             "qoder",
             "workbuddy",
             "pi",
+            "omp",
+            "grok",
+            "zcode",
         ] {
             assert!(
                 all_provider_ids().contains(&id),

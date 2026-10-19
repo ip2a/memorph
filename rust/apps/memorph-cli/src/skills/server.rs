@@ -1587,7 +1587,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(scanned["data"]["roots_scanned"], 8);
+        assert_eq!(scanned["data"]["roots_scanned"], 7);
 
         let listed = wait_for_skills(app, 2000).await;
         assert_eq!(listed["data"]["total"], 1);

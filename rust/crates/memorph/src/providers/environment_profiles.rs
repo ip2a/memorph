@@ -4,6 +4,9 @@ pub(crate) fn executable_candidates(provider_id: &str) -> &'static [&'static str
     let provider_id = crate::providers::canonical_provider_id(provider_id);
     match provider_id.as_str() {
         "antigravity" => &["antigravity"],
+        "grok" => &["grok"],
+        "omp" => &["omp"],
+        "zcode" => &["zcode"],
         "claude" => &["claude"],
         "codex" => &["codex"],
         "copilot" => &["gh"],
@@ -23,6 +26,9 @@ pub(crate) fn config_path(provider_id: &str) -> PathBuf {
     let provider_id = crate::providers::canonical_provider_id(provider_id);
     match provider_id.as_str() {
         "antigravity" => home_join(".antigravity"),
+        "grok" => home_join(".grok"),
+        "omp" => home_join(".omp"),
+        "zcode" => home_join(".zcode"),
         "claude" => home_join(".claude"),
         "codex" => home_join(".codex"),
         "copilot" => app_config_dir("Code", ".config/Code")

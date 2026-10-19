@@ -59,6 +59,9 @@ const PROJECTED_SESSION_PROVIDER_IDS: &[&str] = &[
     "qoder",
     "workbuddy",
     "pi",
+    "omp",
+    "grok",
+    "zcode",
     "antigravity",
 ];
 

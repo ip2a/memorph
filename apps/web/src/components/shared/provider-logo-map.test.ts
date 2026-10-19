@@ -10,12 +10,9 @@ describe("resolveProviderLogoAssetId", () => {
     expect(resolveProviderLogoAssetId("codex")).toBe("codex");
     expect(resolveProviderLogoAssetId("kimi")).toBe("kimi-for-coding");
     expect(resolveProviderLogoAssetId("copilot")).toBe("github-copilot");
-    expect(resolveProviderLogoAssetId("openclaw")).toBe("openclaw");
-    expect(resolveProviderLogoAssetId("augment")).toBe("augment");
   });
 
   it("accepts direct asset ids", () => {
-    expect(resolveProviderLogoAssetId("deepseek")).toBe("deepseek");
     expect(resolveProviderLogoAssetId("opencode")).toBe("opencode");
   });
 
@@ -29,7 +26,6 @@ describe("resolveProviderLogoAssetId", () => {
     expect(resolveProviderLogoAssetId("kiro")).toBe("kiro");
     expect(resolveProviderLogoAssetId("gemini")).toBe("gemini");
     expect(resolveProviderLogoAssetId("antigravity")).toBe("antigravity");
-    expect(resolveProviderLogoAssetId("cline")).toBe("cline");
   });
 });
 

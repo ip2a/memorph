@@ -146,7 +146,7 @@ pub(super) fn opencode_database_source(source_locator: &str) -> Option<(&str, &s
     (!database_path.is_empty() && !session_id.is_empty()).then_some((database_path, session_id))
 }
 
-pub(super) fn imported_session_from_data(
+pub(crate) fn imported_session_from_data(
     session_id: &str,
     (session_json, messages, parts): OpenCodeSessionData,
 ) -> Result<ImportedSession> {

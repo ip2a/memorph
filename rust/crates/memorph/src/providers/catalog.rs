@@ -93,6 +93,9 @@ fn curated_display_name(canonical_id: &str) -> Option<&'static str> {
         "qoder" => "Qoder",
         "workbuddy" => "WorkBuddy",
         "pi" => "Pi",
+        "omp" => "Oh My Pi",
+        "grok" => "Grok Build",
+        "zcode" => "ZCode",
         _ => return None,
     })
 }

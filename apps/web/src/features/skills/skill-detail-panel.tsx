@@ -37,7 +37,7 @@ import { SectionHeading } from "@/components/shared/section-heading";
 import type { I18nKey } from "@/lib/i18n-core";
 import type { SkillAsset, SkillCatalogItem, SkillDetail, SkillFilePreview } from "@/lib/types";
 
-const AGENTS = ["claude", "codex", "gemini", "opencode", "hermes"] as const;
+const AGENTS = ["claude", "codex", "gemini", "opencode"] as const;
 
 type DetailTab = "bundle" | "coverage" | "installations" | "consolidate";
 
