@@ -108,3 +108,5 @@ local/*
 
 # Provider-native test fixtures.
 !/rust/crates/memorph/src/providers/**/fixtures/**
+# macOS noise in whitelisted dirs.
+.DS_Store
