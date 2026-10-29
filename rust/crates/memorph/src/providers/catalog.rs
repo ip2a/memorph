@@ -83,26 +83,19 @@ fn curated_display_name(canonical_id: &str) -> Option<&'static str> {
     Some(match canonical_id {
         "claude" => "Claude",
         "codex" => "Codex",
-        "cline" => "Cline",
         "cursor" => "Cursor",
         "opencode" => "OpenCode",
-        "openclaw" => "OpenClaw",
         "kiro" => "Kiro",
         "kimi" => "Kimi",
         "gemini" => "Gemini",
-        "deepseek" => "DeepSeek",
         "antigravity" => "Antigravity",
         "copilot" => "Copilot",
-        "windsurf" => "Windsurf",
-        "codebuddy" => "CodeBuddy",
         "qoder" => "Qoder",
-        "trae" => "Trae",
-        "droid" => "Droid",
         "workbuddy" => "WorkBuddy",
-        "hermes" => "Hermes",
-        "qwen" => "Qwen",
-        "amazonq" => "Amazon Q",
         "pi" => "Pi",
+        "omp" => "Oh My Pi",
+        "grok" => "Grok Build",
+        "zcode" => "ZCode",
         _ => return None,
     })
 }
@@ -269,7 +262,7 @@ mod tests {
     fn display_name_uses_curated_map_and_canonicalizes() {
         assert_eq!(display_name("claude"), "Claude");
         assert_eq!(display_name("opencode"), "OpenCode");
-        assert_eq!(display_name("deepseek"), "DeepSeek");
+        assert_eq!(display_name("cursor"), "Cursor");
         assert_eq!(display_name("gemini"), "Gemini");
     }
 

@@ -7,7 +7,7 @@ use super::inspection::{
     SkillsOverview, MANAGED_MARKER,
 };
 
-pub const SKILL_AGENTS: [(&str, &str, &str, &str); 6] = [
+pub const SKILL_AGENTS: [(&str, &str, &str, &str); 5] = [
     ("claude", "Claude Code", ".claude/skills", ".claude/skills"),
     ("codex", "Codex", ".codex/skills", ".codex/skills"),
     ("gemini", "Gemini CLI", ".gemini/skills", ".gemini/skills"),
@@ -17,7 +17,6 @@ pub const SKILL_AGENTS: [(&str, &str, &str, &str); 6] = [
         ".config/opencode/skills",
         ".opencode/skills",
     ),
-    ("hermes", "Hermes", ".hermes/skills", ".hermes/skills"),
     ("agents-shared", "Shared Agents", ".agents/skills", ""),
 ];
 

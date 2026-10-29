@@ -1,33 +1,25 @@
 mod aliases;
 pub mod antigravity;
+pub mod grok;
 pub mod catalog;
 pub mod claude;
-pub mod cline;
-pub mod codebuddy;
 pub mod codex;
 pub mod copilot;
 pub mod cursor;
-pub mod deepseek;
-pub mod droid;
-pub mod emerging;
 pub(crate) mod environment_profiles;
 pub mod gemini;
-pub(crate) mod generic_json;
-pub mod hermes;
 pub mod kimi;
 pub mod kiro;
-pub mod openclaw;
 pub mod opencode;
 pub mod pi;
 pub mod qoder;
-pub mod qwen;
-pub mod trae;
-pub mod windsurf;
 pub mod workbuddy;
+pub mod zcode;
 
-pub mod amazonq;
 pub(crate) mod hook_profiles;
 mod hook_registry;
+pub mod omp;
+pub(crate) mod pi_format;
 pub(crate) mod q_conversation;
 
 use crate::provider::Provider;
@@ -35,27 +27,19 @@ use crate::provider::Provider;
 const PROVIDER_IDS: &[&str] = &[
     "claude",
     "codex",
-    "cline",
     "cursor",
     "opencode",
-    "openclaw",
-    "augment",
     "kiro",
-    "deepseek",
     "kimi",
     "gemini",
     "antigravity",
     "copilot",
-    "windsurf",
-    "codebuddy",
     "qoder",
-    "trae",
-    "droid",
     "workbuddy",
-    "hermes",
-    "amazonq",
-    "qwen",
     "pi",
+    "omp",
+    "grok",
+    "zcode",
 ];
 
 pub struct ProviderRegistry;
@@ -70,27 +54,19 @@ impl ProviderRegistry {
         match id.as_str() {
             "claude" => Some(Box::new(claude::ClaudeProvider)),
             "codex" => Some(Box::new(codex::CodexProvider)),
-            "cline" => Some(Box::new(cline::ClineProvider)),
             "cursor" => Some(Box::new(cursor::CursorProvider)),
-            "deepseek" => Some(Box::new(deepseek::DeepseekProvider)),
             "antigravity" => Some(Box::new(antigravity::AntigravityProvider)),
             "copilot" => Some(Box::new(copilot::CopilotProvider)),
-            "windsurf" => Some(Box::new(windsurf::WindsurfProvider)),
-            "codebuddy" => Some(Box::new(codebuddy::CodeBuddyProvider)),
             "qoder" => Some(Box::new(qoder::QoderProvider)),
-            "trae" => Some(Box::new(trae::TraeProvider)),
-            "droid" => Some(Box::new(droid::DroidProvider)),
             "workbuddy" => Some(Box::new(workbuddy::WorkBuddyProvider)),
-            "hermes" => Some(Box::new(hermes::HermesProvider)),
-            "amazonq" => Some(Box::new(amazonq::AmazonQProvider)),
-            "qwen" => Some(Box::new(qwen::QwenProvider)),
             "pi" => Some(Box::new(pi::PiProvider)),
             "gemini" => Some(Box::new(gemini::GeminiProvider)),
             "kiro" => Some(Box::new(kiro::KiroProvider)),
             "kimi" => Some(Box::new(kimi::KimiProvider)),
             "opencode" => Some(Box::new(opencode::OpenCodeProvider)),
-            "openclaw" => Some(Box::new(openclaw::OpenClawProvider)),
-            "augment" => Some(Box::new(emerging::AugmentProvider)),
+            "omp" => Some(Box::new(omp::OmpProvider)),
+            "grok" => Some(Box::new(grok::GrokProvider)),
+            "zcode" => Some(Box::new(zcode::ZcodeProvider)),
             _ => None,
         }
     }
@@ -146,20 +122,13 @@ mod tests {
         for id in [
             "gemini",
             "antigravity",
-            "cline",
             "copilot",
-            "windsurf",
-            "codebuddy",
             "qoder",
-            "trae",
-            "droid",
             "workbuddy",
-            "hermes",
             "pi",
-            "amazonq",
-            "qwen",
-            "openclaw",
-            "augment",
+            "omp",
+            "grok",
+            "zcode",
         ] {
             assert!(
                 all_provider_ids().contains(&id),
@@ -167,30 +136,6 @@ mod tests {
             );
             assert!(find_provider(id).is_some(), "provider not found: {id}");
         }
-    }
-
-    #[test]
-    fn registry_uses_native_hermes_sqlite_provider() {
-        let provider = find_provider("hermes").expect("hermes provider");
-        let capabilities = provider.capabilities();
-        assert_eq!(
-            capabilities.storage_shape,
-            crate::provider::StorageShape::Sqlite
-        );
-        assert_eq!(
-            capabilities.page_strategy,
-            crate::provider::PageStrategy::FullImport
-        );
-        assert!(capabilities.resume);
-        assert!(!capabilities.delete);
-        assert!(!capabilities.rename);
-        assert!(!capabilities.export);
-    }
-
-    #[test]
-    fn factory_alias_resolves_to_droid_provider() {
-        let provider = find_provider("factory").expect("factory alias");
-        assert_eq!(provider.id(), "droid");
     }
 
     /// Providers without export must not claim meaningful export fidelity:

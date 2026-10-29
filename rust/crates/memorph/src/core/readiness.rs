@@ -1361,6 +1361,11 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         crate::config::set_test_home_dir(home.path().to_path_buf());
+        // cursor_data_dir() reads the real HOME on macOS, bypassing the test
+        // home; pin the state db to a missing path so the scan stays hermetic.
+        crate::providers::cursor::db::set_test_cursor_db_path(Some(
+            home.path().join("missing/state.vscdb"),
+        ));
 
         let workspace = workspace.path().canonicalize().unwrap();
         let report = projection::reconcile_workspace_session_projections_for(
@@ -1372,6 +1377,7 @@ mod tests {
         let latest = HashMap::from([("cursor".to_string(), ActivityStatus::Success)]);
         let readiness = assess_expected_workspace_checkpoints(&["cursor"], &latest);
 
+        crate::providers::cursor::db::set_test_cursor_db_path(None);
         crate::config::reset_test_home_dir();
         assert_eq!(report.discovered_sessions, 0);
         assert_eq!(report.scanned_providers, 1);

@@ -25,6 +25,7 @@ local/*
 # Root project metadata.
 !/.gitignore
 !/platforms.toml
+!/paseo.json
 !/LICENSE
 !/install.sh
 !/README.md

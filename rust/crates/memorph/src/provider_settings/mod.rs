@@ -1,21 +1,16 @@
 mod antigravity;
 mod claude;
-mod cline;
-mod codebuddy;
 mod codex;
 mod common_hooks;
 mod copilot;
 mod cursor;
-mod droid;
 mod gemini;
-mod hermes;
 mod kimi;
 mod kiro;
 mod opencode;
 mod pi;
 mod qoder;
 mod registry;
-mod trae;
 mod workbuddy;
 
 use anyhow::{Context as _, Result};
@@ -307,8 +302,8 @@ mod tests {
 
     #[test]
     fn alias_lists_same_provider_specific_settings_as_canonical_id() {
-        let canonical = list_provider_settings("droid").unwrap();
-        let alias = list_provider_settings("factory").unwrap();
+        let canonical = list_provider_settings("workbuddy").unwrap();
+        let alias = list_provider_settings("work-buddy").unwrap();
 
         assert_eq!(alias.len(), canonical.len());
         assert_eq!(

@@ -10,12 +10,9 @@ describe("resolveProviderLogoAssetId", () => {
     expect(resolveProviderLogoAssetId("codex")).toBe("codex");
     expect(resolveProviderLogoAssetId("kimi")).toBe("kimi-for-coding");
     expect(resolveProviderLogoAssetId("copilot")).toBe("github-copilot");
-    expect(resolveProviderLogoAssetId("openclaw")).toBe("openclaw");
-    expect(resolveProviderLogoAssetId("augment")).toBe("augment");
   });
 
   it("accepts direct asset ids", () => {
-    expect(resolveProviderLogoAssetId("deepseek")).toBe("deepseek");
     expect(resolveProviderLogoAssetId("opencode")).toBe("opencode");
   });
 
@@ -26,12 +23,9 @@ describe("resolveProviderLogoAssetId", () => {
   it("maps newly sourced agent logos by direct id", () => {
     expect(resolveProviderLogoAssetId("cursor")).toBe("cursor");
     expect(resolveProviderLogoAssetId("workbuddy")).toBe("workbuddy");
-    expect(resolveProviderLogoAssetId("droid")).toBe("droid");
     expect(resolveProviderLogoAssetId("kiro")).toBe("kiro");
     expect(resolveProviderLogoAssetId("gemini")).toBe("gemini");
     expect(resolveProviderLogoAssetId("antigravity")).toBe("antigravity");
-    expect(resolveProviderLogoAssetId("factory")).toBe("droid");
-    expect(resolveProviderLogoAssetId("cline")).toBe("cline");
   });
 });
 

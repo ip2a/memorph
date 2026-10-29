@@ -1,0 +1,8 @@
+{
+  "worktree": {
+    "setup": [
+      "sh \"$PASEO_SOURCE_CHECKOUT_PATH/local/paseo-worktree-setup.sh\" || echo '[setup] 私有 setup 脚本缺失，跳过'",
+      "cargo fetch --manifest-path rust/Cargo.toml"
+    ]
+  }
+}

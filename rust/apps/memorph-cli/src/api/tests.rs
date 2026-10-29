@@ -1391,11 +1391,11 @@ async fn settings_route_lists_codeisland_gap_provider_hook_actions() {
 #[tokio::test]
 async fn provider_settings_route_accepts_provider_aliases() {
     let canonical_request = Request::builder()
-        .uri("/api/v1/providers/droid/settings")
+        .uri("/api/v1/providers/workbuddy/settings")
         .body(Body::empty())
         .unwrap();
     let alias_request = Request::builder()
-        .uri("/api/v1/providers/factory/settings")
+        .uri("/api/v1/providers/work-buddy/settings")
         .body(Body::empty())
         .unwrap();
 
@@ -1756,17 +1756,6 @@ async fn catalog_route_returns_classified_providers() {
         .expect("missing opencode catalog entry");
     assert_eq!(opencode["capability_set"]["page_strategy"], "native_page");
 
-    let openclaw = providers
-        .iter()
-        .find(|provider| provider["provider_id"] == "openclaw")
-        .expect("missing openclaw catalog entry");
-    assert_eq!(openclaw["display_name"], "OpenClaw");
-    assert_eq!(openclaw["capability_set"]["scan"], true);
-    assert_eq!(openclaw["capability_set"]["import"], true);
-    assert_eq!(openclaw["capability_set"]["storage_shape"], "sqlite");
-    assert_eq!(openclaw["capability_set"]["resume"], false);
-    assert_eq!(openclaw["capability_set"]["delete"], false);
-
     let gemini = providers
         .iter()
         .find(|provider| provider["provider_id"] == "gemini")
@@ -1808,116 +1797,12 @@ async fn catalog_route_returns_classified_providers() {
         gemini_capabilities["activity_support"]["session_activity"],
         false
     );
-
-    let deepseek = providers
-        .iter()
-        .find(|provider| provider["provider_id"] == "deepseek")
-        .expect("missing deepseek catalog entry");
-    let deepseek_capabilities = &deepseek["capability_set"];
-    assert_eq!(deepseek_capabilities["scan"], true);
-    assert_eq!(deepseek_capabilities["import"], true);
-    assert_eq!(deepseek_capabilities["export"], true);
-    assert_eq!(deepseek_capabilities["delete"], true);
-    assert_eq!(deepseek_capabilities["rename"], true);
-    assert_eq!(deepseek_capabilities["resume"], true);
-    assert_eq!(deepseek_capabilities["scan_strategy"], "full_scan");
-    assert_eq!(deepseek_capabilities["page_strategy"], "full_import");
-    assert_eq!(deepseek_capabilities["storage_shape"], "sqlite");
-    assert_eq!(deepseek_capabilities["turn_quality"], "inferred");
-    assert_eq!(deepseek_capabilities["resume_quality"], "native");
-    assert_eq!(deepseek_capabilities["write_risk"]["level"], "high");
-    assert_eq!(deepseek_capabilities["write_risk"]["sqlite"], true);
-    assert_eq!(deepseek_capabilities["write_risk"]["sidecar_files"], true);
-    assert_eq!(deepseek_capabilities["write_risk"]["index_repair"], true);
-    assert_eq!(
-        deepseek_capabilities["backup_support"]["before_write"],
-        true
-    );
-    assert_eq!(deepseek_capabilities["backup_support"]["restore"], true);
-    assert_eq!(
-        deepseek_capabilities["activity_support"]["hook_events"],
-        false
-    );
-    assert_eq!(
-        deepseek_capabilities["activity_support"]["runtime_endpoint"],
-        false
-    );
-    assert_eq!(
-        deepseek_capabilities["activity_support"]["session_activity"],
-        false
-    );
-    assert_eq!(
-        deepseek_capabilities["export_fidelity"]["tool_call"],
-        "preserved"
-    );
-    assert_eq!(
-        deepseek_capabilities["export_fidelity"]["provider_payload"],
-        "dropped"
-    );
-}
-
-#[test]
-fn active_catalog_uses_projected_sessions_for_workspace_activity() {
-    let ordered_ids = vec!["codex".to_string(), "claude".to_string()];
-    let snapshots = vec![
-        memorph::storage::snapshot_store::ProjectedSessionSnapshotRow {
-            canonical_session_id: "codex:one".to_string(),
-            provider_id: "codex".to_string(),
-            provider_session_id: Some("one".to_string()),
-            title: None,
-            display_title: None,
-            workspace_dir: Some("/tmp/current".to_string()),
-            last_active_at_ms: Some(30),
-            source_path: Some("/missing/codex.jsonl".to_string()),
-            message_count: Some(0),
-            event_count: 0,
-            turn_count: 0,
-            size_bytes: None,
-            hidden: false,
-            pinned: false,
-            archived: false,
-            preferred_targets: Vec::new(),
-            stale: false,
-        },
-        memorph::storage::snapshot_store::ProjectedSessionSnapshotRow {
-            canonical_session_id: "codex:two".to_string(),
-            provider_id: "codex".to_string(),
-            provider_session_id: Some("two".to_string()),
-            title: None,
-            display_title: None,
-            workspace_dir: Some("/tmp/other".to_string()),
-            last_active_at_ms: Some(50),
-            source_path: Some("/missing/codex-other.jsonl".to_string()),
-            message_count: Some(0),
-            event_count: 0,
-            turn_count: 0,
-            size_bytes: None,
-            hidden: false,
-            pinned: false,
-            archived: false,
-            preferred_targets: Vec::new(),
-            stale: false,
-        },
-    ];
-
-    let catalog =
-        provider_active_catalog_from_snapshots(&ordered_ids, Some("/tmp/current"), &snapshots);
-
-    assert_eq!(catalog.providers.len(), 2);
-    assert_eq!(catalog.providers[0].provider_id, "codex");
-    assert!(catalog.providers[0].has_sessions);
-    assert_eq!(catalog.providers[0].active_time.global, 50);
-    assert_eq!(catalog.providers[0].active_time.workspace, 30);
-    assert_eq!(catalog.providers[1].provider_id, "claude");
-    assert!(!catalog.providers[1].has_sessions);
-    assert_eq!(catalog.providers[1].active_time.global, 0);
-    assert_eq!(catalog.providers[1].active_time.workspace, 0);
 }
 
 #[tokio::test]
-async fn agents_route_exposes_settings_field() {
+async fn agents_summary_route_includes_settings_and_environment_without_features() {
     let request = Request::builder()
-        .uri("/api/v1/agents")
+        .uri("/api/v1/agents/summary")
         .body(Body::empty())
         .unwrap();
     let (status, value) = read_json(router(), request).await;
